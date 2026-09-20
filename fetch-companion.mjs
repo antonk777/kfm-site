@@ -23,9 +23,14 @@ if (!latest.tag_name) {
   process.exit(1);
 }
 
-const asset = (latest.assets || []).find((item) => item.name === outName);
+const preferred = [outName, "KFM-Launcher.exe", "KFM Companion.exe", "KFM Launcher.exe"];
+const assets = latest.assets || [];
+const asset =
+  preferred.map((name) => assets.find((item) => item.name === name)).find(Boolean) ||
+  assets.find((item) => /\.exe$/i.test(item.name));
 if (!asset) {
-  console.error("Release " + latest.tag_name + " has no " + outName + ".");
+  const names = assets.map((item) => item.name).join(", ") || "(none)";
+  console.error("Release " + latest.tag_name + " has no .exe asset. Found: " + names);
   process.exit(1);
 }
 
@@ -34,7 +39,7 @@ const file = await getBuffer(
   { ...headers, Accept: "application/octet-stream" }
 );
 await import("node:fs/promises").then((fs) => fs.writeFile(outName, file));
-console.log("Wrote " + outName + " from " + repo + " " + latest.tag_name + " (" + file.length + " bytes)");
+console.log("Wrote " + outName + " from " + repo + " " + latest.tag_name + " asset " + asset.name + " (" + file.length + " bytes)");
 
 async function getJson(url) {
   const res = await fetch(url, { headers: { ...headers, Accept: "application/vnd.github+json" } });
