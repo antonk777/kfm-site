@@ -8,22 +8,29 @@
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
-      justify-content: center;
+      justify-content: safe center;
+      align-items: center;
       background: #000;
       color: #f3ead8;
       font: 18px/1.5 "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+    }
+    .page {
+      width: min(58.75rem, calc(100% - 2rem));
+      padding: 1.5rem 0;
     }
     .langs {
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
       gap: 0.35rem 1rem;
-      padding: 0 1rem 0.75rem;
+      padding: 0 0 0.75rem;
     }
     .langs button {
       appearance: none;
@@ -42,9 +49,9 @@
       text-underline-offset: 0.25em;
     }
     main {
-      width: min(58.75rem, calc(100% - 2rem));
-      margin: 0 auto;
-      padding: 0 0 1.5rem;
+      width: 100%;
+      margin: 0;
+      padding: 0;
       text-align: center;
     }
     img.logo {
@@ -82,6 +89,7 @@
   </style>
 </head>
 <body>
+  <div class="page">
   <nav class="langs" aria-label="Language">
     <button type="button" data-lang="en">English</button>
     <button type="button" data-lang="ru">Русский</button>
@@ -103,6 +111,7 @@
     <p class="muted" data-i18n="note"></p>
     </div>
   </main>
+  </div>
   <script>
     const I18N = {
       ru: {
