@@ -30,7 +30,7 @@
       flex-wrap: wrap;
       justify-content: center;
       gap: 0.35rem 1rem;
-      padding: 0 0 0.75rem;
+      margin: 0 0 2rem;
     }
     .langs button {
       appearance: none;
@@ -52,16 +52,15 @@
       width: 100%;
       margin: 0;
       padding: 0;
-      text-align: center;
     }
     img.logo {
       display: block;
-      width: min(100%, 940px);
+      width: min(100%, 580px);
       height: auto;
       margin: 0 auto 1.75rem;
     }
     .copy {
-      width: min(36rem, 100%);
+      width: min(100%, 580px);
       margin: 0 auto;
     }
     p { margin: 0 0 1rem; }
@@ -76,7 +75,9 @@
     }
     li { margin: 0.35rem 0; }
     a.dl {
-      display: inline-block;
+      display: block;
+      margin: 0 auto;
+      width: min(100%, 300px);
       padding: 0.7rem 1.25rem;
       border: 1px solid #f3ead8;
       color: #000;
@@ -84,8 +85,10 @@
       text-decoration: none;
       font-weight: 600;
       letter-spacing: 0.02em;
+      text-align: center;
     }
     a.dl:hover { filter: brightness(1.08); }
+    .note { text-align: center; }
   </style>
 </head>
 <body>
@@ -108,7 +111,7 @@
       <li data-i18n="step4"></li>
     </ol>
     <p><a class="dl" href="KFM-Companion.exe" download="KFM Companion.exe" data-i18n="download"></a></p>
-    <p class="muted" data-i18n="note"></p>
+    <p class="note muted" data-i18n="note"></p>
     </div>
   </main>
   </div>
