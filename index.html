@@ -58,7 +58,18 @@
       display: block;
       width: min(100%, 580px);
       height: auto;
+      margin: 0 auto 0.85rem;
+    }
+    .beta {
+      display: table;
       margin: 0 auto 1.75rem;
+      padding: 0.4rem 1.25rem;
+      background: #f5d000;
+      color: #111;
+      font-weight: 800;
+      font-size: 1.45rem;
+      letter-spacing: 0.04em;
+      line-height: 1.2;
     }
     .copy {
       width: min(100%, 580px);
@@ -128,6 +139,7 @@
   </nav>
   <main>
     <img class="logo" src="kf-maniacs-logo.svg" width="940" height="81" alt="KF-Maniacs">
+    <p class="beta" data-i18n="beta">Beta testing</p>
     <div class="copy">
     <p data-i18n="intro">KF-Maniacs is a Killing Floor community. You need KFM Companion so Steam keeps your stats and achievements after you play on our server.</p>
     <ol>
@@ -155,7 +167,8 @@
         step4: "Не закрывайте Companion, пока играете. Запись в Steam идёт после выхода из игры.",
         download: "Скачать KFM Companion",
         note: "Steam должен быть запущен.",
-        changelog: "Что нового"
+        changelog: "Что нового",
+        beta: "Бета-тестирование"
       },
       en: {
         intro: "KF-Maniacs is a Killing Floor community. You need KFM Companion so Steam keeps your stats and achievements after you play on our server.",
@@ -165,7 +178,8 @@
         step4: "Leave Companion running while you play. It writes to Steam after you quit the game.",
         download: "Download KFM Companion",
         note: "Steam must be running.",
-        changelog: "What's new"
+        changelog: "What's new",
+        beta: "Beta testing"
       },
       zh: {
         intro: "KF-Maniacs 是 Killing Floor 社区。要在我们的服务器上玩完后让 Steam 保存统计数据和成就，需要使用 KFM Companion。",
@@ -175,7 +189,8 @@
         step4: "游戏期间请勿关闭 Companion。退出游戏后才会写入 Steam。",
         download: "下载 KFM Companion",
         note: "Steam 必须正在运行。",
-        changelog: "更新内容"
+        changelog: "更新内容",
+        beta: "公测中"
       },
       es: {
         intro: "KF-Maniacs es una comunidad de Killing Floor. Necesitas KFM Companion para que Steam conserve tus estadísticas y logros después de jugar en nuestro servidor.",
@@ -185,7 +200,8 @@
         step4: "No cierres Companion mientras juegas. Se guarda en Steam al salir del juego.",
         download: "Descargar KFM Companion",
         note: "Steam debe estar en ejecución.",
-        changelog: "Novedades"
+        changelog: "Novedades",
+        beta: "Pruebas beta"
       },
       pt: {
         intro: "KF-Maniacs é uma comunidade de Killing Floor. Você precisa do KFM Companion para o Steam guardar suas estatísticas e conquistas depois de jogar no nosso servidor.",
@@ -195,7 +211,8 @@
         step4: "Deixe o Companion aberto enquanto joga. Ele grava no Steam depois que você sair do jogo.",
         download: "Baixar KFM Companion",
         note: "O Steam precisa estar em execução.",
-        changelog: "Novidades"
+        changelog: "Novidades",
+        beta: "Teste beta"
       }
     };
 
