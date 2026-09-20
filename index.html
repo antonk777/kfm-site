@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KF-Maniacs</title>
+  <link rel="icon" href="kf-maniacs-logo.png">
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      color: #f3ead8;
+      font: 18px/1.5 "Segoe UI", Arial, sans-serif;
+    }
+    main {
+      width: min(36rem, calc(100% - 2rem));
+      padding: 2.5rem 0 3rem;
+      text-align: center;
+    }
+    img.logo {
+      display: block;
+      width: min(100%, 34rem);
+      height: auto;
+      margin: 0 auto 1.75rem;
+    }
+    p {
+      margin: 0 0 1rem;
+    }
+    .muted {
+      color: #b9b09c;
+      font-size: 0.95rem;
+    }
+    ol {
+      margin: 1.25rem 0 1.75rem;
+      padding: 0 0 0 1.2rem;
+      text-align: left;
+    }
+    li { margin: 0.35rem 0; }
+    a.dl {
+      display: inline-block;
+      padding: 0.7rem 1.25rem;
+      border: 1px solid #f3ead8;
+      color: #000;
+      background: #f3ead8;
+      text-decoration: none;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    a.dl:hover { filter: brightness(1.08); }
+    .en {
+      margin-top: 2rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid #2a2a2a;
+      color: #b9b09c;
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="logo" src="kf-maniacs-logo.png" width="512" height="128" alt="KF-Maniacs">
+
+    <p>KF-Maniacs — сообщество Killing Floor. Чтобы Steam сохранил статистику и ачивки после игры на нашем сервере, нужен KFM Companion.</p>
+
+    <ol>
+      <li>Запустите Steam и войдите в аккаунт.</li>
+      <li>Скачайте и запустите KFM Companion.</li>
+      <li>Запустите Killing Floor как обычно.</li>
+      <li>Не закрывайте Companion, пока играете. Запись в Steam идёт после выхода из игры.</li>
+    </ol>
+
+    <p><a class="dl" href="KFM-Companion.exe" download="KFM Companion.exe">Скачать KFM Companion</a></p>
+    <p class="muted">Windows / Steam должен быть запущен.</p>
+
+    <div class="en">
+      <p>KF-Maniacs is a Killing Floor community. KFM Companion is required to keep Steam stats and achievements after you play on our server.</p>
+      <p>Start Steam, run Companion, then launch Killing Floor as usual. Leave Companion running until after you quit the game — it writes to Steam when KillingFloor.exe exits.</p>
+    </div>
+  </main>
+</body>
+</html>
