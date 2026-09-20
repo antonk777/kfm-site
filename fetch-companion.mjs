@@ -1,10 +1,11 @@
-// Download the latest KFM Companion.exe from the private companion repo.
+// Download the latest companion .exe from the private repo and write release.json.
 // Cloudflare Pages: Build command `node fetch-companion.mjs`, output `/`
-// Env: COMPANION_GITHUB_TOKEN = fine-grained PAT with Contents: Read on antonk777/KFMLauncher
+// Env: COMPANION_GITHUB_TOKEN = PAT with Contents: Read on antonk777/KFMLauncher
+
+import { writeFile } from "node:fs/promises";
 
 const repo = process.env.COMPANION_REPO || "antonk777/KFMLauncher";
 const token = process.env.COMPANION_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
-const outName = "KFM-Companion.exe";
 
 if (!token) {
   console.error("Set COMPANION_GITHUB_TOKEN (PAT with read access to " + repo + ").");
@@ -23,10 +24,19 @@ if (!latest.tag_name) {
   process.exit(1);
 }
 
-const preferred = [outName, "KFM-Launcher.exe", "KFM Companion.exe", "KFM Launcher.exe"];
+const tag = String(latest.tag_name).replace(/[^A-Za-z0-9._-]+/g, "-");
+const outName = "KFM-Companion-" + tag + ".exe";
 const assets = latest.assets || [];
+const preferred = [
+  outName,
+  "KFM-Companion.exe",
+  "KFM-Launcher.exe",
+  "KFM Companion.exe",
+  "KFM Launcher.exe",
+];
 const asset =
   preferred.map((name) => assets.find((item) => item.name === name)).find(Boolean) ||
+  assets.find((item) => /^KFM-Companion-.+\.exe$/i.test(item.name)) ||
   assets.find((item) => /\.exe$/i.test(item.name));
 if (!asset) {
   const names = assets.map((item) => item.name).join(", ") || "(none)";
@@ -38,8 +48,26 @@ const file = await getBuffer(
   "https://api.github.com/repos/" + repo + "/releases/assets/" + asset.id,
   { ...headers, Accept: "application/octet-stream" }
 );
-await import("node:fs/promises").then((fs) => fs.writeFile(outName, file));
-console.log("Wrote " + outName + " from " + repo + " " + latest.tag_name + " asset " + asset.name + " (" + file.length + " bytes)");
+const meta = {
+  tag: latest.tag_name,
+  name: latest.name || ("KFM Companion " + latest.tag_name),
+  body: latest.body || "",
+  published: latest.published_at || "",
+  file: outName,
+};
+
+await writeFile(outName, file);
+await writeFile("release.json", JSON.stringify(meta, null, 2) + "\n");
+await writeFile(
+  "_headers",
+  "/" + outName + "\n" +
+    "  Content-Type: application/octet-stream\n" +
+    "  Content-Disposition: attachment; filename=\"" + outName + "\"\n"
+);
+console.log(
+  "Wrote " + outName + " from " + repo + " " + latest.tag_name +
+    " asset " + asset.name + " (" + file.length + " bytes)"
+);
 
 async function getJson(url) {
   const res = await fetch(url, { headers: { ...headers, Accept: "application/vnd.github+json" } });

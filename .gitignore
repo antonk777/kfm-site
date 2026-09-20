@@ -1,3 +1,6 @@
 # Build leftovers and the companion binary (downloaded at deploy).
 _build/
 KFM-Companion.exe
+KFM-Companion-*.exe
+KFM-Launcher*.exe
+release.json

@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KF-Maniacs</title>
+  <title>KF-Maniacs — Killing Floor community</title>
+  <meta name="description" content="KF-Maniacs is a Killing Floor community. Download KFM Companion so Steam keeps your stats and achievements after you play on our server.">
   <link rel="icon" href="favicon.ico">
   <style>
     :root { color-scheme: dark; }
@@ -89,6 +90,24 @@
     }
     a.dl:hover { filter: brightness(1.08); }
     .note { text-align: center; }
+    .log {
+      margin: 2rem 0 0;
+      text-align: left;
+      color: #b9b09c;
+      font-size: 0.95rem;
+    }
+    .log[hidden] { display: none; }
+    .log h2 {
+      margin: 0 0 0.6rem;
+      color: #f3ead8;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .log pre {
+      margin: 0;
+      white-space: pre-wrap;
+      font: inherit;
+    }
   </style>
 </head>
 <body>
@@ -110,8 +129,12 @@
       <li data-i18n="step3"></li>
       <li data-i18n="step4"></li>
     </ol>
-    <p><a class="dl" href="KFM-Companion.exe" download="KFM Companion.exe" data-i18n="download"></a></p>
+    <p><a class="dl" href="#" download data-i18n="download"></a></p>
     <p class="note muted" data-i18n="note"></p>
+    <section class="log" hidden>
+      <h2 data-i18n="changelog"></h2>
+      <pre id="changelog"></pre>
+    </section>
     </div>
   </main>
   </div>
@@ -124,7 +147,8 @@
         step3: "Запустите Killing Floor как обычно.",
         step4: "Не закрывайте Companion, пока играете. Запись в Steam идёт после выхода из игры.",
         download: "Скачать KFM Companion",
-        note: "Steam должен быть запущен."
+        note: "Steam должен быть запущен.",
+        changelog: "Что нового"
       },
       en: {
         intro: "KF-Maniacs is a Killing Floor community. You need KFM Companion so Steam keeps your stats and achievements after you play on our server.",
@@ -133,7 +157,8 @@
         step3: "Launch Killing Floor as usual.",
         step4: "Leave Companion running while you play. It writes to Steam after you quit the game.",
         download: "Download KFM Companion",
-        note: "Steam must be running."
+        note: "Steam must be running.",
+        changelog: "What's new"
       },
       zh: {
         intro: "KF-Maniacs 是 Killing Floor 社区。要在我们的服务器上玩完后让 Steam 保存统计数据和成就，需要使用 KFM Companion。",
@@ -142,7 +167,8 @@
         step3: "照常启动 Killing Floor。",
         step4: "游戏期间请勿关闭 Companion。退出游戏后才会写入 Steam。",
         download: "下载 KFM Companion",
-        note: "Steam 必须正在运行。"
+        note: "Steam 必须正在运行。",
+        changelog: "更新内容"
       },
       es: {
         intro: "KF-Maniacs es una comunidad de Killing Floor. Necesitas KFM Companion para que Steam conserve tus estadísticas y logros después de jugar en nuestro servidor.",
@@ -151,7 +177,8 @@
         step3: "Inicia Killing Floor como siempre.",
         step4: "No cierres Companion mientras juegas. Se guarda en Steam al salir del juego.",
         download: "Descargar KFM Companion",
-        note: "Steam debe estar en ejecución."
+        note: "Steam debe estar en ejecución.",
+        changelog: "Novedades"
       },
       pt: {
         intro: "KF-Maniacs é uma comunidade de Killing Floor. Você precisa do KFM Companion para o Steam guardar suas estatísticas e conquistas depois de jogar no nosso servidor.",
@@ -160,11 +187,14 @@
         step3: "Inicie o Killing Floor normalmente.",
         step4: "Deixe o Companion aberto enquanto joga. Ele grava no Steam depois que você sair do jogo.",
         download: "Baixar KFM Companion",
-        note: "O Steam precisa estar em execução."
+        note: "O Steam precisa estar em execução.",
+        changelog: "Novidades"
       }
     };
 
     const langs = Object.keys(I18N);
+    let release = null;
+    let currentLang = "en";
 
     function browserLang() {
       const list = navigator.languages && navigator.languages.length
@@ -186,24 +216,48 @@
       document.documentElement.lang = lang === "zh" ? "zh-Hans" : lang;
       document.querySelectorAll("[data-i18n]").forEach((el) => {
         const key = el.getAttribute("data-i18n");
-        if (pack[key]) el.textContent = pack[key];
+        if (!pack[key]) return;
+        if (key === "download" && release && release.tag) {
+          el.textContent = pack.download + " " + release.tag;
+        } else {
+          el.textContent = pack[key];
+        }
       });
       document.querySelectorAll(".langs button").forEach((btn) => {
         btn.setAttribute("aria-current", btn.getAttribute("data-lang") === lang ? "true" : "false");
       });
     }
 
-    const initial = langs.includes(localStorage.getItem("kfm-lang"))
+    currentLang = langs.includes(localStorage.getItem("kfm-lang"))
       ? localStorage.getItem("kfm-lang")
       : browserLang();
-    apply(initial);
+    apply(currentLang);
+
+    fetch("release.json")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        release = data;
+        const link = document.querySelector("a.dl");
+        if (data.file) {
+          link.href = data.file;
+          link.setAttribute("download", data.file);
+        }
+        const body = (data.body || "").trim();
+        if (body) {
+          document.getElementById("changelog").textContent = body;
+          document.querySelector(".log").hidden = false;
+        }
+        apply(currentLang);
+      })
+      .catch(() => {});
 
     document.querySelector(".langs").addEventListener("click", (event) => {
       const btn = event.target.closest("button[data-lang]");
       if (!btn) return;
-      const lang = btn.getAttribute("data-lang");
-      localStorage.setItem("kfm-lang", lang);
-      apply(lang);
+      currentLang = btn.getAttribute("data-lang");
+      localStorage.setItem("kfm-lang", currentLang);
+      apply(currentLang);
     });
   </script>
 </body>
