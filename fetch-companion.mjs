@@ -51,7 +51,7 @@ const file = await getBuffer(
 const meta = {
   tag: latest.tag_name,
   name: latest.name || ("KFM Companion " + latest.tag_name),
-  body: latest.body || "",
+  body: releaseNotes(latest.body),
   published: latest.published_at || "",
   file: outName,
 };
@@ -68,6 +68,16 @@ console.log(
   "Wrote " + outName + " from " + repo + " " + latest.tag_name +
     " asset " + asset.name + " (" + file.length + " bytes)"
 );
+
+function releaseNotes(raw) {
+  let text = String(raw || "");
+  text = text.replace(/<!--[\s\S]*?-->/g, "");
+  text = text.replace(/^\s*\*{0,2}Full Changelog\*{0,2}\s*:\s*\S+\s*$/gim, "");
+  text = text.replace(/https?:\/\/github\.com\/[^\s]+\/compare\/[^\s]+/g, "");
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  if (/^#{1,6}\s+\S.*$/.test(text) && !/\n/.test(text)) return "";
+  return text;
+}
 
 async function getJson(url) {
   const res = await fetch(url, { headers: { ...headers, Accept: "application/vnd.github+json" } });

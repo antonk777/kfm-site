@@ -78,7 +78,7 @@
     a.dl {
       display: block;
       margin: 0 auto;
-      width: min(100%, 300px);
+      width: min(100%, 340px);
       padding: 0.7rem 1.25rem;
       border: 1px solid #f3ead8;
       color: #000;
@@ -97,14 +97,21 @@
       font-size: 0.95rem;
     }
     .log[hidden] { display: none; }
-    .log h2 {
-      margin: 0 0 0.6rem;
+    .log summary {
+      cursor: pointer;
       color: #f3ead8;
       font-size: 1.05rem;
       font-weight: 600;
+      list-style: none;
     }
+    .log summary::-webkit-details-marker { display: none; }
+    .log summary::before {
+      content: "▸ ";
+      font-weight: 400;
+    }
+    .log[open] summary::before { content: "▾ "; }
     .log pre {
-      margin: 0;
+      margin: 0.6rem 0 0;
       white-space: pre-wrap;
       font: inherit;
     }
@@ -131,10 +138,10 @@
     </ol>
     <p><a class="dl" href="#" download data-i18n="download">Download KFM Companion</a></p>
     <p class="note muted" data-i18n="note">Steam must be running.</p>
-    <section class="log" hidden>
-      <h2 data-i18n="changelog">What's new</h2>
+    <details class="log" hidden>
+      <summary data-i18n="changelog">What's new</summary>
       <pre id="changelog"></pre>
-    </section>
+    </details>
     </div>
   </main>
   </div>
@@ -198,6 +205,16 @@
       ? localStorage.getItem("kfm-lang")
       : "en";
 
+    function releaseNotes(raw) {
+      let text = String(raw || "");
+      text = text.replace(/<!--[\s\S]*?-->/g, "");
+      text = text.replace(/^\s*\*{0,2}Full Changelog\*{0,2}\s*:\s*\S+\s*$/gim, "");
+      text = text.replace(/https?:\/\/github\.com\/[^\s]+\/compare\/[^\s]+/g, "");
+      text = text.replace(/\n{3,}/g, "\n\n").trim();
+      if (/^#{1,6}\s+\S.*$/.test(text) && !/\n/.test(text)) return "";
+      return text;
+    }
+
     function apply(lang) {
       const pack = I18N[lang] || I18N.en;
       document.documentElement.lang = lang === "zh" ? "zh-Hans" : lang;
@@ -227,7 +244,7 @@
           link.href = data.file;
           link.setAttribute("download", data.file);
         }
-        const body = (data.body || "").trim();
+        const body = releaseNotes(data.body);
         if (body) {
           document.getElementById("changelog").textContent = body;
           document.querySelector(".log").hidden = false;
