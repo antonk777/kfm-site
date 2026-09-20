@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KF-Maniacs</title>
-  <link rel="icon" href="kf-maniacs-logo.png">
+  <link rel="icon" href="kf-maniacs-wordmark.png">
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -39,16 +39,20 @@
       text-underline-offset: 0.25em;
     }
     main {
-      width: min(36rem, calc(100% - 2rem));
+      width: min(58.75rem, calc(100% - 2rem));
       margin: 0 auto;
       padding: 2rem 0 3rem;
       text-align: center;
     }
     img.logo {
       display: block;
-      width: min(100%, 34rem);
+      width: min(100%, 940px);
       height: auto;
       margin: 0 auto 1.75rem;
+    }
+    .copy {
+      width: min(36rem, 100%);
+      margin: 0 auto;
     }
     p { margin: 0 0 1rem; }
     .muted {
@@ -83,7 +87,8 @@
     <button type="button" data-lang="pt">Português</button>
   </nav>
   <main>
-    <img class="logo" src="kf-maniacs-logo.png" width="512" height="128" alt="KF-Maniacs">
+    <img class="logo" src="kf-maniacs-logo.svg" width="940" height="81" alt="KF-Maniacs">
+    <div class="copy">
     <p data-i18n="intro"></p>
     <ol>
       <li data-i18n="step1"></li>
@@ -93,6 +98,7 @@
     </ol>
     <p><a class="dl" href="KFM-Companion.exe" download="KFM Companion.exe" data-i18n="download"></a></p>
     <p class="muted" data-i18n="note"></p>
+    </div>
   </main>
   <script>
     const I18N = {
