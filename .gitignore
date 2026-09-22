@@ -4,3 +4,8 @@ KFM-Companion.exe
 KFM-Companion-*.exe
 KFM-Launcher*.exe
 release.json
+kfm-site.env
+.env
+*.log
+*.sqlite
+*.sqlite-*

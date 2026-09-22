@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh KF-Maniacs Companion binary for Caddy site
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/kfm-site.env
+WorkingDirectory=/opt/kfm-site
+ExecStart=/usr/bin/node /opt/kfm-site/fetch-companion.mjs
+User=root
+Group=root

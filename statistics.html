@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>KF Maniacs — Статистика</title>
+<style>
+html,body{margin:0;padding:0;background:#111;color:#eee;font:14px/1.4 Segoe UI,Arial,sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:24px}
+h1{margin:0 0 6px;font-size:22px;color:#fff}
+h2{margin:28px 0 10px;font-size:16px;color:#ddd;font-weight:600}
+.sub{color:#aaa;margin:0 0 18px}
+.cards{display:flex;gap:12px;margin:0 0 18px;flex-wrap:wrap}
+.card{background:#1c1c1c;border:1px solid #333;border-radius:8px;padding:12px 16px;min-width:140px}
+.card b{display:block;font-size:26px;color:#fff}
+.card span{color:#888;font-size:12px}
+.peak b{color:#e23}
+.uniq b{color:#e6c35c}
+.ret b{color:#5cc8e6}
+.time b{color:#8fd16a}
+.dl b{color:#c9a0ff}
+.box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin:0 0 8px}
+canvas{width:100%;height:320px;display:block}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a2a2a}
+th{color:#888;font-weight:600}
+.err{color:#e66;padding:24px}
+.bars{display:flex;align-items:flex-end;gap:4px;height:160px;padding:8px 4px 0}
+.bar{flex:1;background:#333;min-width:8px;position:relative;border-radius:3px 3px 0 0}
+.bar>i{display:block;background:#e6c35c;border-radius:3px 3px 0 0;width:100%}
+.bar span{position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-size:10px;color:#666;white-space:nowrap}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:8px 0 0;color:#aaa;font-size:12px}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <p class="sub">Загрузка…</p>
+</div>
+<script>
+(function () {
+  var app = document.getElementById("app");
+
+  var OUTCOME_RU = {
+    win: "Победа",
+    loss: "Поражение",
+    leave: "Выход",
+    unknown: "Неизвестно"
+  };
+
+  function fmtDay(n) {
+    n = "" + n;
+    return n.slice(0, 4) + "-" + n.slice(4, 6) + "-" + n.slice(6, 8);
+  }
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    var m = Math.floor(sec / 60);
+    var h = Math.floor(m / 60);
+    m = m % 60;
+    if (h > 0) return h + " ч " + m + " мин";
+    return m + " мин";
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+  function labelOf(name) {
+    var k = String(name || "").toLowerCase();
+    return OUTCOME_RU[k] || String(name || "");
+  }
+  function localizeList(items) {
+    return (items || []).map(function (it) {
+      return { name: labelOf(it.name), c: it.c };
+    });
+  }
+
+  function drawLineChart(canvas, series, opts) {
+    opts = opts || {};
+    var labels = opts.labels || [];
+    var c = canvas.getContext("2d");
+    var W = (canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1));
+    var H = (canvas.height = 320 * (window.devicePixelRatio || 1));
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    W = canvas.clientWidth;
+    H = 320;
+    var pad = { l: 48, r: 16, t: 24, b: 48 };
+    c.fillStyle = "#1a1a1a";
+    c.fillRect(0, 0, W, H);
+    var n = labels.length;
+    if (!n) {
+      c.fillStyle = "#888";
+      c.fillText("Пока нет данных", 20, 40);
+      return;
+    }
+    var mx = opts.minMax || 1;
+    var i, j, s;
+    for (i = 0; i < series.length; i++) {
+      s = series[i].data;
+      for (j = 0; j < s.length; j++) {
+        if (s[j] == null || isNaN(s[j])) continue;
+        mx = Math.max(mx, s[j]);
+      }
+    }
+    if (mx <= 0) mx = 1;
+    function X(i) {
+      return pad.l + (W - pad.l - pad.r) * (n == 1 ? 0.5 : i / (n - 1));
+    }
+    function Y(v) {
+      return pad.t + (H - pad.t - pad.b) * (1 - v / mx);
+    }
+    c.strokeStyle = "#333";
+    c.fillStyle = "#666";
+    c.font = "11px sans-serif";
+    for (j = 0; j <= 4; j++) {
+      var v = (mx * j) / 4;
+      var yy = Y(v);
+      c.beginPath();
+      c.moveTo(pad.l, yy);
+      c.lineTo(W - pad.r, yy);
+      c.stroke();
+      c.fillText(opts.formatY ? opts.formatY(v) : Math.round(v), 6, yy + 4);
+    }
+    for (i = 0; i < series.length; i++) {
+      s = series[i];
+      c.strokeStyle = s.color;
+      c.lineWidth = 2;
+      c.beginPath();
+      var started = false;
+      for (j = 0; j < n; j++) {
+        if (s.data[j] == null || isNaN(s.data[j])) {
+          started = false;
+          continue;
+        }
+        var xx = X(j),
+          yy2 = Y(s.data[j]);
+        if (!started) {
+          c.moveTo(xx, yy2);
+          started = true;
+        } else c.lineTo(xx, yy2);
+      }
+      c.stroke();
+      c.fillStyle = s.color;
+      for (j = 0; j < n; j++) {
+        if (s.data[j] == null || isNaN(s.data[j])) continue;
+        c.beginPath();
+        c.arc(X(j), Y(s.data[j]), 3, 0, 7);
+        c.fill();
+      }
+    }
+    c.fillStyle = "#888";
+    c.font = "11px sans-serif";
+    var step = Math.max(1, Math.floor(n / 8));
+    for (j = 0; j < n; j += step) {
+      c.save();
+      c.translate(X(j), H - 12);
+      c.rotate(-0.6);
+      c.fillText(fmtDay(labels[j]), 0, 0);
+      c.restore();
+    }
+    var lx = pad.l;
+    for (i = 0; i < series.length; i++) {
+      c.fillStyle = series[i].color;
+      c.fillRect(lx, 8, 10, 10);
+      c.fillStyle = "#ccc";
+      c.fillText(series[i].label, lx + 14, 17);
+      lx += 14 + c.measureText(series[i].label).width + 18;
+    }
+  }
+
+  function barBlock(items, color) {
+    if (!items || !items.length) return "<p class='sub'>Нет данных</p>";
+    var max = 1;
+    items.forEach(function (it) {
+      max = Math.max(max, it.c || 0);
+    });
+    return (
+      "<div class='bars'>" +
+      items
+        .map(function (it) {
+          var h = Math.max(4, Math.round((160 * (it.c || 0)) / max));
+          return (
+            "<div class='bar' title='" +
+            esc(it.name) +
+            ": " +
+            it.c +
+            "'><i style='height:" +
+            h +
+            "px;background:" +
+            color +
+            "'></i><span>" +
+            esc(String(it.name).replace(/^KF-/, "").slice(0, 8)) +
+            "</span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function render(D) {
+    var rows = "";
+    for (var i = D.days.length - 1; i >= 0; i--) {
+      rows +=
+        "<tr><td>" +
+        fmtDay(D.days[i]) +
+        "</td><td>" +
+        D.peak[i] +
+        "</td><td>" +
+        D.unique[i] +
+        "</td><td>" +
+        ((D.downloads && D.downloads[i]) || 0) +
+        "</td><td>" +
+        (D.retention_d1[i] == null ? "—" : D.retention_d1[i] + "%") +
+        "</td><td>" +
+        (D.retention_d7[i] == null ? "—" : D.retention_d7[i] + "%") +
+        "</td><td>" +
+        fmtDur(D.avg_playtime_sec[i]) +
+        "</td></tr>";
+    }
+    app.innerHTML =
+      "<h1>Статистика</h1>" +
+      "<p class='sub'>Скрытый раздел: пик и уникальные игроки за день, удержание, среднее суммарное время игры на игрока за день, скачивания Companion. В сессиях — перк, карта, победа/поражение, волна поражения.</p>" +
+      "<div class='cards'>" +
+      "<div class='card peak'><span>Пик сегодня</span><b>" +
+      D.todayPeak +
+      "</b></div>" +
+      "<div class='card uniq'><span>Уникальных сегодня</span><b>" +
+      D.todayUnique +
+      "</b></div>" +
+      "<div class='card dl'><span>Скачиваний сегодня</span><b>" +
+      (D.downloadsToday || 0) +
+      "</b></div>" +
+      "<div class='card dl'><span>Скачиваний всего</span><b>" +
+      (D.downloadsTotal || 0) +
+      "</b></div>" +
+      "<div class='card'><span>Сессий в базе</span><b>" +
+      D.sessions +
+      "</b></div>" +
+      "<div class='card'><span>Игроков в базе</span><b>" +
+      D.players +
+      "</b></div>" +
+      "<div class='card'><span>Дней</span><b>" +
+      D.days.length +
+      "</b></div>" +
+      "</div>" +
+      "<h2>Пик и уникальные игроки</h2>" +
+      "<div class='box'><canvas id='cPeak'></canvas></div>" +
+      "<h2>Скачивания Companion</h2>" +
+      "<div class='box'><canvas id='cDl'></canvas></div>" +
+      "<p class='sub'>Успешные ответы Caddy на /download и KFM-Companion*.exe (из access-лога).</p>" +
+      "<h2>Удержание (день 1 / день 7)</h2>" +
+      "<div class='box'><canvas id='cRet'></canvas></div>" +
+      "<p class='sub'>Доля игроков, которые вернулись через 1 или 7 календарных дней.</p>" +
+      "<h2>Среднее суммарное время на игрока за день</h2>" +
+      "<div class='box'><canvas id='cTime'></canvas></div>" +
+      "<p class='sub'>За каждый день: среднее от суммы длительностей сессий каждого игрока.</p>" +
+      "<div class='grid'>" +
+      "<div><h2>Перки</h2><div class='box'>" +
+      barBlock(D.perks, "#5cc8e6") +
+      "</div></div>" +
+      "<div><h2>Карты</h2><div class='box'>" +
+      barBlock(D.maps, "#e6c35c") +
+      "</div></div>" +
+      "<div><h2>Исходы</h2><div class='box'>" +
+      barBlock(localizeList(D.outcomes), "#8fd16a") +
+      "</div></div>" +
+      "<div><h2>Волна поражения</h2><div class='box'>" +
+      barBlock(D.loss_waves, "#e23") +
+      "</div></div>" +
+      "</div>" +
+      "<h2>История</h2>" +
+      "<table><thead><tr><th>Дата</th><th>Пик</th><th>Уникальные</th><th>Скачивания</th><th>Д1</th><th>Д7</th><th>Ср. время</th></tr></thead>" +
+      "<tbody>" +
+      rows +
+      "</tbody></table>";
+
+    drawLineChart(document.getElementById("cPeak"), [
+      { label: "Пик", color: "#ee2233", data: D.peak },
+      { label: "Уникальные", color: "#e6c35c", data: D.unique },
+    ], { labels: D.days });
+
+    drawLineChart(document.getElementById("cDl"), [
+      { label: "Скачивания", color: "#c9a0ff", data: D.downloads || [] },
+    ], { labels: D.days });
+
+    drawLineChart(document.getElementById("cRet"), [
+      { label: "Д1 %", color: "#5cc8e6", data: D.retention_d1 },
+      { label: "Д7 %", color: "#c65ce6", data: D.retention_d7 },
+    ], { labels: D.days, minMax: 100, formatY: function (v) { return Math.round(v) + "%"; } });
+
+    drawLineChart(document.getElementById("cTime"), [
+      { label: "Ср. на игрока", color: "#8fd16a", data: D.avg_playtime_sec },
+    ], {
+      labels: D.days,
+      formatY: function (v) { return fmtDur(v); },
+    });
+  }
+
+  fetch("/api/stats/summary", { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(render)
+    .catch(function (e) {
+      app.innerHTML = "<p class='err'>Не удалось загрузить статистику: " + esc(e.message) + "</p>";
+    });
+})();
+</script>
+</body>
+</html>

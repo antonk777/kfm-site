@@ -1,0 +1,66 @@
+# KF-Maniacs download site — replace Cloudflare Pages.
+# Install: see README.md / deploy.sh
+#
+# Env overrides (optional, baked by deploy.sh):
+#   SITE_ROOT / SITE_DOMAIN / SITE_LOG / CADDY_EMAIL / SITE_IP
+
+{
+	email {$CADDY_EMAIL:admin@manul.lol}
+}
+
+(site) {
+	root * {$SITE_ROOT:/var/www/kfm.manul.lol}
+	encode gzip zstd
+
+	handle /api/stats* {
+		reverse_proxy 127.0.0.1:{$STATS_PORT:8765}
+	}
+	handle /statistics* {
+		reverse_proxy 127.0.0.1:{$STATS_PORT:8765}
+	}
+
+	handle /download {
+		rewrite * /KFM-Companion.exe
+		header Content-Type "application/octet-stream"
+		header Content-Disposition "attachment; filename=\"KFM-Companion.exe\""
+		file_server
+	}
+
+	@exe path *.exe
+	header @exe Content-Type "application/octet-stream"
+	header @exe Content-Disposition "attachment"
+	@exeNamed path_regexp exe ^/(KFM-Companion[^/]*\.exe)$
+	header @exeNamed Content-Disposition `attachment; filename="{re.exe.1}"`
+
+	@blocked {
+		path /.env* /Caddyfile* /deploy.sh /fetch-companion.mjs /download-stats.mjs
+		path /stats-server.py /statistics.html
+		path /.git*
+	}
+	respond @blocked 404
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	file_server
+
+	log {
+		output file {$SITE_LOG:/var/log/caddy/kfm.manul.lol.log} {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+{$SITE_DOMAIN:kfm.manul.lol} {
+	import site
+}
+
+# Reachable before DNS is pointed at this VPS (and for health checks).
+http://{$SITE_IP:85.192.30.108} {
+	import site
+}

@@ -264,6 +264,8 @@
         if (data.file) {
           link.href = data.file;
           link.setAttribute("download", data.file);
+        } else if (data.download) {
+          link.href = data.download;
         }
         const body = releaseNotes(data.body);
         if (body) {

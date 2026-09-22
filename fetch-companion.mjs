@@ -1,9 +1,16 @@
 // Download the latest companion .exe from the private repo and write release.json.
-// Cloudflare Pages: Build command `node fetch-companion.mjs`, output `/`
-// Env: COMPANION_GITHUB_TOKEN = PAT with Contents: Read on antonk777/KFMLauncher
+// Caddy: run on the host (deploy.sh / systemd timer), output into SITE_ROOT.
+// Env:
+//   COMPANION_GITHUB_TOKEN = PAT with Contents: Read on antonk777/KFMLauncher
+//   COMPANION_REPO         = antonk777/KFMLauncher (optional)
+//   SITE_ROOT              = directory Caddy serves (default: this script's dir)
 
-import { writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const outDir = process.env.SITE_ROOT || scriptDir;
 const repo = process.env.COMPANION_REPO || "antonk777/KFMLauncher";
 const token = process.env.COMPANION_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
 
@@ -17,6 +24,8 @@ const headers = {
   "X-GitHub-Api-Version": "2022-11-28",
   "User-Agent": "kfm-site-deploy",
 };
+
+await mkdir(outDir, { recursive: true });
 
 const latest = await getJson("https://api.github.com/repos/" + repo + "/releases/latest");
 if (!latest.tag_name) {
@@ -48,25 +57,35 @@ const file = await getBuffer(
   "https://api.github.com/repos/" + repo + "/releases/assets/" + asset.id,
   { ...headers, Accept: "application/octet-stream" }
 );
+
+const versionedPath = join(outDir, outName);
+const stablePath = join(outDir, "KFM-Companion.exe");
+await writeFile(versionedPath, file);
+await copyFile(versionedPath, stablePath);
+
 const meta = {
   tag: latest.tag_name,
   name: latest.name || ("KFM Companion " + latest.tag_name),
   body: releaseNotes(latest.body),
   published: latest.published_at || "",
   file: outName,
+  download: "/download",
 };
 
-await writeFile(outName, file);
-await writeFile("release.json", JSON.stringify(meta, null, 2) + "\n");
-await writeFile(
-  "_headers",
-  "/" + outName + "\n" +
-    "  Content-Type: application/octet-stream\n" +
-    "  Content-Disposition: attachment; filename=\"" + outName + "\"\n"
-);
+await writeFile(join(outDir, "release.json"), JSON.stringify(meta, null, 2) + "\n");
+
+// Drop older versioned builds so the web root does not grow forever.
+const keep = new Set([outName, "KFM-Companion.exe"]);
+for (const name of await readdir(outDir)) {
+  if (!/^KFM-Companion-.+\.exe$/i.test(name)) continue;
+  if (keep.has(name)) continue;
+  await unlink(join(outDir, name));
+  console.log("Removed old " + name);
+}
+
 console.log(
-  "Wrote " + outName + " from " + repo + " " + latest.tag_name +
-    " asset " + asset.name + " (" + file.length + " bytes)"
+  "Wrote " + versionedPath + " (+ KFM-Companion.exe) from " + repo + " " +
+    latest.tag_name + " asset " + asset.name + " (" + file.length + " bytes)"
 );
 
 function releaseNotes(raw) {
