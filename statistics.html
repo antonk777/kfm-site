@@ -20,20 +20,22 @@ h2{margin:28px 0 10px;font-size:16px;color:#ddd;font-weight:600}
 .ret b{color:#5cc8e6}
 .time b{color:#8fd16a}
 .dl b{color:#c9a0ff}
+.load b{color:#5ce6b8}
 .box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin:0 0 8px}
 canvas{width:100%;height:320px;display:block}
+canvas.pie{height:260px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:800px){.grid{grid-template-columns:1fr}}
 table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a2a2a}
 th{color:#888;font-weight:600}
 .err{color:#e66;padding:24px}
-.bars{display:flex;align-items:flex-end;gap:4px;height:160px;padding:8px 4px 0}
-.bar{flex:1;background:#333;min-width:8px;position:relative;border-radius:3px 3px 0 0}
-.bar>i{display:block;background:#e6c35c;border-radius:3px 3px 0 0;width:100%}
-.bar span{position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-size:10px;color:#666;white-space:nowrap}
-.legend{display:flex;gap:16px;flex-wrap:wrap;margin:8px 0 0;color:#aaa;font-size:12px}
-.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:middle}
+.legend{display:flex;gap:10px 16px;flex-wrap:wrap;margin:8px 0 0;color:#aaa;font-size:12px}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:2px;vertical-align:middle}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px}
+.tab{appearance:none;border:1px solid #333;background:#1a1a1a;color:#bbb;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
+.tab:hover{border-color:#555;color:#eee}
+.tab.active{background:#2a2a2a;border-color:#666;color:#fff;font-weight:600}
 </style>
 </head>
 <body>
@@ -160,7 +162,7 @@ th{color:#888;font-weight:600}
       c.save();
       c.translate(X(j), H - 12);
       c.rotate(-0.6);
-      c.fillText(fmtDay(labels[j]), 0, 0);
+      c.fillText(opts.formatX ? opts.formatX(labels[j]) : fmtDay(labels[j]), 0, 0);
       c.restore();
     }
     var lx = pad.l;
@@ -173,34 +175,136 @@ th{color:#888;font-weight:600}
     }
   }
 
-  function barBlock(items, color) {
-    if (!items || !items.length) return "<p class='sub'>Нет данных</p>";
-    var max = 1;
-    items.forEach(function (it) {
-      max = Math.max(max, it.c || 0);
-    });
-    return (
-      "<div class='bars'>" +
-      items
-        .map(function (it) {
-          var h = Math.max(4, Math.round((160 * (it.c || 0)) / max));
-          return (
-            "<div class='bar' title='" +
-            esc(it.name) +
-            ": " +
-            it.c +
-            "'><i style='height:" +
-            h +
-            "px;background:" +
-            color +
-            "'></i><span>" +
-            esc(String(it.name).replace(/^KF-/, "").slice(0, 8)) +
-            "</span></div>"
-          );
-        })
-        .join("") +
-      "</div>"
-    );
+  var PIE_COLORS = [
+    "#5cc8e6", "#e6c35c", "#8fd16a", "#e23", "#c9a0ff",
+    "#5ce6b8", "#e68a5c", "#5c7ae6", "#e65ca8", "#a8e65c",
+    "#e6e05c", "#7a5ce6"
+  ];
+
+  function drawPieChart(canvas, items) {
+    var c = canvas.getContext("2d");
+    var dpr = window.devicePixelRatio || 1;
+    var cssW = canvas.clientWidth || 280;
+    var cssH = 260;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.scale(dpr, dpr);
+    c.fillStyle = "#1a1a1a";
+    c.fillRect(0, 0, cssW, cssH);
+
+    items = (items || []).filter(function (it) { return (it.c || 0) > 0; });
+    if (!items.length) {
+      c.fillStyle = "#888";
+      c.font = "13px sans-serif";
+      c.fillText("Нет данных", 20, 40);
+      return;
+    }
+
+    var total = 0;
+    var i;
+    for (i = 0; i < items.length; i++) total += items[i].c || 0;
+    if (total <= 0) total = 1;
+
+    var cx = Math.min(cssW * 0.38, 140);
+    var cy = cssH / 2;
+    var r = Math.min(cx, cy) - 18;
+    var start = -Math.PI / 2;
+
+    for (i = 0; i < items.length; i++) {
+      var slice = ((items[i].c || 0) / total) * Math.PI * 2;
+      c.beginPath();
+      c.moveTo(cx, cy);
+      c.arc(cx, cy, r, start, start + slice);
+      c.closePath();
+      c.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
+      c.fill();
+      c.strokeStyle = "#1a1a1a";
+      c.lineWidth = 2;
+      c.stroke();
+      start += slice;
+    }
+
+    // hole for donut look
+    c.beginPath();
+    c.arc(cx, cy, r * 0.45, 0, Math.PI * 2);
+    c.fillStyle = "#1a1a1a";
+    c.fill();
+
+    c.fillStyle = "#ccc";
+    c.font = "12px sans-serif";
+    c.textAlign = "center";
+    c.fillText(String(total), cx, cy + 4);
+
+    var lx = cx + r + 24;
+    var ly = 28;
+    c.textAlign = "left";
+    c.font = "12px sans-serif";
+    for (i = 0; i < items.length; i++) {
+      var pct = Math.round((1000 * (items[i].c || 0)) / total) / 10;
+      var label = String(items[i].name || "").replace(/^KF-/, "");
+      if (label.length > 18) label = label.slice(0, 17) + "…";
+      c.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
+      c.fillRect(lx, ly - 8, 10, 10);
+      c.fillStyle = "#ccc";
+      c.fillText(label + " — " + items[i].c + " (" + pct + "%)", lx + 16, ly);
+      ly += 18;
+      if (ly > cssH - 12) break;
+    }
+  }
+
+  var SERVER_LABELS = {
+    "": "Все",
+    normal: "Normal",
+    hard: "Hard",
+    suicidal: "Suicidal",
+    hoe: "HoE"
+  };
+
+  var activeServer = "";
+  var loadTimer = null;
+
+  function tabLabel(name) {
+    var k = String(name || "");
+    return SERVER_LABELS[k] || SERVER_LABELS[k.toLowerCase()] || k || "Все";
+  }
+
+  function renderTabs(D) {
+    var tabs = D.serverTabs || [
+      { name: "", label: "Все" },
+      { name: "normal", label: "Normal" },
+      { name: "hard", label: "Hard" },
+      { name: "suicidal", label: "Suicidal" },
+      { name: "hoe", label: "HoE" }
+    ];
+    var html = "<div class='tabs' role='tablist'>";
+    for (var i = 0; i < tabs.length; i++) {
+      var t = tabs[i];
+      var name = t.name || "";
+      var active = name === activeServer ? " active" : "";
+      html +=
+        "<button type='button' class='tab" +
+        active +
+        "' data-server='" +
+        esc(name) +
+        "'>" +
+        esc(t.label || tabLabel(name)) +
+        "</button>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function bindTabs() {
+    var buttons = app.querySelectorAll(".tab");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].addEventListener("click", function () {
+        var next = this.getAttribute("data-server") || "";
+        if (next === activeServer) return;
+        activeServer = next;
+        loadSummary();
+      });
+    }
   }
 
   function render(D) {
@@ -223,9 +327,19 @@ th{color:#888;font-weight:600}
         fmtDur(D.avg_playtime_sec[i]) +
         "</td></tr>";
     }
+    var filterNote = activeServer
+      ? "Сервер: <b>" + esc(tabLabel(activeServer)) + "</b>. Нагрузка — процесс этого слота. "
+      : "Сумма по всем серверам. Нагрузка — весь VPS. ";
+    var serversBlock = activeServer
+      ? ""
+      : "<div><h2>Серверы</h2><div class='box'><canvas class='pie' id='cServers'></canvas></div></div>";
     app.innerHTML =
       "<h1>Статистика</h1>" +
-      "<p class='sub'>Скрытый раздел: пик и уникальные игроки за день, удержание, среднее суммарное время игры на игрока за день, скачивания Companion. В сессиях — перк, карта, победа/поражение, волна поражения.</p>" +
+      "<p class='sub'>Скрытый раздел: пик и уникальные игроки за день, удержание, среднее время на игрока, скачивания Companion. Сессия = одна карта; игроки привязываются к сессии карты.</p>" +
+      renderTabs(D) +
+      "<p class='sub'>" +
+      filterNote +
+      "Скачивания Companion — общие.</p>" +
       "<div class='cards'>" +
       "<div class='card peak'><span>Пик сегодня</span><b>" +
       D.todayPeak +
@@ -239,16 +353,24 @@ th{color:#888;font-weight:600}
       "<div class='card dl'><span>Скачиваний всего</span><b>" +
       (D.downloadsTotal || 0) +
       "</b></div>" +
-      "<div class='card'><span>Сессий в базе</span><b>" +
+      "<div class='card'><span>Сессий карт</span><b>" +
       D.sessions +
       "</b></div>" +
-      "<div class='card'><span>Игроков в базе</span><b>" +
+      "<div class='card'><span>Игроков в сессиях</span><b>" +
       D.players +
       "</b></div>" +
       "<div class='card'><span>Дней</span><b>" +
       D.days.length +
       "</b></div>" +
       "</div>" +
+      "<h2 id='loadTitle'>Нагрузка VPS</h2>" +
+      "<div class='cards' id='loadCards'>" +
+      "<div class='card load'><span id='loadCpuLabel'>CPU</span><b id='loadCpu'>—</b></div>" +
+      "<div class='card load'><span id='loadMemLabel'>Память</span><b id='loadMem'>—</b></div>" +
+      "<div class='card load'><span id='loadNetLabel'>Сеть</span><b id='loadNet'>—</b></div>" +
+      "</div>" +
+      "<div class='box'><canvas id='cLoad'></canvas></div>" +
+      "<p class='sub' id='loadHint'>Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx). Окно ~10 мин.</p>" +
       "<h2>Пик и уникальные игроки</h2>" +
       "<div class='box'><canvas id='cPeak'></canvas></div>" +
       "<h2>Скачивания Companion</h2>" +
@@ -261,24 +383,19 @@ th{color:#888;font-weight:600}
       "<div class='box'><canvas id='cTime'></canvas></div>" +
       "<p class='sub'>За каждый день: среднее от суммы длительностей сессий каждого игрока.</p>" +
       "<div class='grid'>" +
-      "<div><h2>Перки</h2><div class='box'>" +
-      barBlock(D.perks, "#5cc8e6") +
-      "</div></div>" +
-      "<div><h2>Карты</h2><div class='box'>" +
-      barBlock(D.maps, "#e6c35c") +
-      "</div></div>" +
-      "<div><h2>Исходы</h2><div class='box'>" +
-      barBlock(localizeList(D.outcomes), "#8fd16a") +
-      "</div></div>" +
-      "<div><h2>Волна поражения</h2><div class='box'>" +
-      barBlock(D.loss_waves, "#e23") +
-      "</div></div>" +
+      "<div><h2>Перки</h2><div class='box'><canvas class='pie' id='cPerks'></canvas></div></div>" +
+      "<div><h2>Карты</h2><div class='box'><canvas class='pie' id='cMaps'></canvas></div></div>" +
+      "<div><h2>Исходы</h2><div class='box'><canvas class='pie' id='cOut'></canvas></div></div>" +
+      "<div><h2>Волна поражения</h2><div class='box'><canvas class='pie' id='cLoss'></canvas></div></div>" +
+      serversBlock +
       "</div>" +
       "<h2>История</h2>" +
       "<table><thead><tr><th>Дата</th><th>Пик</th><th>Уникальные</th><th>Скачивания</th><th>Д1</th><th>Д7</th><th>Ср. время</th></tr></thead>" +
       "<tbody>" +
       rows +
       "</tbody></table>";
+
+    bindTabs();
 
     drawLineChart(document.getElementById("cPeak"), [
       { label: "Пик", color: "#ee2233", data: D.peak },
@@ -300,17 +417,147 @@ th{color:#888;font-weight:600}
       labels: D.days,
       formatY: function (v) { return fmtDur(v); },
     });
+
+    drawPieChart(document.getElementById("cPerks"), D.perks);
+    drawPieChart(document.getElementById("cMaps"), D.maps);
+    drawPieChart(document.getElementById("cOut"), localizeList(D.outcomes));
+    drawPieChart(
+      document.getElementById("cLoss"),
+      (D.loss_waves || []).map(function (it) {
+        return { name: "Волна " + it.name, c: it.c };
+      })
+    );
+    var cSrv = document.getElementById("cServers");
+    if (cSrv) drawPieChart(cSrv, D.servers || []);
+    startLoadMonitor();
   }
 
-  fetch("/api/stats/summary", { cache: "no-store" })
-    .then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
-    .then(render)
-    .catch(function (e) {
-      app.innerHTML = "<p class='err'>Не удалось загрузить статистику: " + esc(e.message) + "</p>";
+  function fmtClock(ts) {
+    var d = new Date((ts || 0) * 1000);
+    var hh = d.getHours();
+    var mm = d.getMinutes();
+    var ss = d.getSeconds();
+    return (
+      (hh < 10 ? "0" : "") + hh + ":" +
+      (mm < 10 ? "0" : "") + mm + ":" +
+      (ss < 10 ? "0" : "") + ss
+    );
+  }
+
+  function drawLoadChart(canvas, L) {
+    var labels = (L.ts || []).map(fmtClock);
+    var net = L.net_mbps || [];
+    var mxNet = 1;
+    net.forEach(function (v) {
+      if (v != null && !isNaN(v)) mxNet = Math.max(mxNet, v);
     });
+    // Scale net onto 0..100 so it shares one axis with CPU/mem; legend shows real Mbps.
+    var netScaled = net.map(function (v) {
+      if (v == null || isNaN(v)) return null;
+      return (100 * v) / mxNet;
+    });
+    var memLabel = L.scope === "process" ? "Память % RSS" : "Память %";
+    drawLineChart(
+      canvas,
+      [
+        { label: "CPU %", color: "#5ce6b8", data: L.cpu || [] },
+        { label: memLabel, color: "#5cc8e6", data: L.mem || [] },
+        {
+          label: "Сеть (max " + (Math.round(mxNet * 10) / 10) + " Мбит/с)",
+          color: "#e6c35c",
+          data: netScaled,
+        },
+      ],
+      {
+        labels: labels,
+        minMax: 100,
+        formatY: function (v) {
+          return Math.round(v) + "%";
+        },
+        formatX: function (v) {
+          return v;
+        },
+      }
+    );
+  }
+
+  function refreshLoad() {
+    var q = activeServer
+      ? "/api/stats/load?server=" + encodeURIComponent(activeServer)
+      : "/api/stats/load";
+    fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (L) {
+        var now = L.now || {};
+        var elCpu = document.getElementById("loadCpu");
+        var elMem = document.getElementById("loadMem");
+        var elNet = document.getElementById("loadNet");
+        var elTitle = document.getElementById("loadTitle");
+        var elHint = document.getElementById("loadHint");
+        var elMemLabel = document.getElementById("loadMemLabel");
+        var canvas = document.getElementById("cLoad");
+        if (!canvas) return;
+        if (elTitle) {
+          elTitle.textContent =
+            L.scope === "process"
+              ? "Нагрузка процесса " + tabLabel(activeServer)
+              : "Нагрузка VPS";
+        }
+        if (elHint) {
+          elHint.textContent =
+            L.scope === "process"
+              ? "Realtime каждые 2 с по процессу ucc-bin: доля CPU хоста, RSS, UDP на портах слота (игра+query). Окно ~10 мин."
+              : "Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx) всего хоста. Окно ~10 мин.";
+        }
+        if (elMemLabel) {
+          elMemLabel.textContent = L.scope === "process" ? "Память RSS" : "Память";
+        }
+        if (elCpu) elCpu.textContent = now.cpu != null ? now.cpu + "%" : "—";
+        if (elMem) {
+          if (L.scope === "process" && now.mem_mb != null) {
+            elMem.textContent =
+              now.mem_mb + " МБ" + (now.mem != null ? " (" + now.mem + "%)" : "");
+          } else {
+            elMem.textContent = now.mem != null ? now.mem + "%" : "—";
+          }
+        }
+        if (elNet)
+          elNet.textContent =
+            now.net_mbps != null ? now.net_mbps + " Мбит/с" : "—";
+        drawLoadChart(canvas, L);
+      })
+      .catch(function () {});
+  }
+
+  function startLoadMonitor() {
+    if (loadTimer) clearInterval(loadTimer);
+    refreshLoad();
+    loadTimer = setInterval(refreshLoad, 2000);
+  }
+
+  function loadSummary() {
+    var q = activeServer
+      ? "/api/stats/summary?server=" + encodeURIComponent(activeServer)
+      : "/api/stats/summary";
+    app.innerHTML = "<p class='sub'>Загрузка…</p>";
+    fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(render)
+      .catch(function (e) {
+        app.innerHTML =
+          "<p class='err'>Не удалось загрузить статистику: " +
+          esc(e.message) +
+          "</p>";
+      });
+  }
+
+  loadSummary();
 })();
 </script>
 </body>
