@@ -102,6 +102,12 @@
     }
     a.dl:hover { filter: brightness(1.08); }
     .note { text-align: center; }
+    .warn {
+      margin: 1.25rem 0 0;
+      color: #d9c7a2;
+      font-size: 0.95rem;
+    }
+    .warn a { color: #f3ead8; }
     .log {
       margin: 2rem 0 0;
       text-align: left;
@@ -154,6 +160,7 @@
     </ol>
     <p><a class="dl" href="#" download data-i18n="download">Download KFM Companion</a></p>
     <p class="note muted" data-i18n="note">Steam must be running.</p>
+    <p class="warn"><span data-i18n="warn">Google and Windows Defender may warn about KFM Companion. This is a false positive. The program is open source and legitimate. It is based on Steam Achievement Manager and does nothing harmful.</span> <a href="https://github.com/antonk777/KFMCompanion" data-i18n="source">Source code</a></p>
     <details class="log" hidden>
       <summary data-i18n="changelog">What's new</summary>
       <pre id="changelog"></pre>
@@ -171,6 +178,8 @@
         step4: "Не закрывайте Companion, пока играете. Запись в Steam идёт после выхода из игры.",
         download: "Скачать KFM Companion",
         note: "Steam должен быть запущен.",
+        warn: "Google и Windows Defender могут предупреждать о KFM Companion. Это ложное срабатывание. Программа с открытым исходным кодом и полностью легитимна. Она основана на Steam Achievement Manager, в ней нет ничего вредоносного.",
+        source: "Исходный код",
         changelog: "Что нового",
         beta: "Бета-тестирование"
       },
@@ -182,6 +191,8 @@
         step4: "Leave Companion running while you play. It writes to Steam after you quit the game.",
         download: "Download KFM Companion",
         note: "Steam must be running.",
+        warn: "Google and Windows Defender may warn about KFM Companion. This is a false positive. The program is open source and legitimate. It is based on Steam Achievement Manager and does nothing harmful.",
+        source: "Source code",
         changelog: "What's new",
         beta: "Beta testing"
       },
@@ -193,6 +204,8 @@
         step4: "游戏期间请勿关闭 Companion。退出游戏后才会写入 Steam。",
         download: "下载 KFM Companion",
         note: "Steam 必须正在运行。",
+        warn: "Google 和 Windows Defender 可能会对 KFM Companion 发出警告。这是误报。程序是开源的，完全合法：它基于 Steam Achievement Manager，不含任何恶意内容。",
+        source: "源代码",
         changelog: "更新内容",
         beta: "公测中"
       },
@@ -204,6 +217,8 @@
         step4: "No cierres Companion mientras juegas. Se guarda en Steam al salir del juego.",
         download: "Descargar KFM Companion",
         note: "Steam debe estar en ejecución.",
+        warn: "Google y Windows Defender pueden advertir sobre KFM Companion. Es un falso positivo. El programa es de código abierto y legítimo: se basa en Steam Achievement Manager y no contiene nada dañino.",
+        source: "Código fuente",
         changelog: "Novedades",
         beta: "Pruebas beta"
       },
@@ -215,6 +230,8 @@
         step4: "Deixe o Companion aberto enquanto joga. Ele grava no Steam depois que você sair do jogo.",
         download: "Baixar KFM Companion",
         note: "O Steam precisa estar em execução.",
+        warn: "O Google e o Windows Defender podem alertar sobre o KFM Companion. Isso é um falso positivo. O programa é de código aberto e legítimo: é baseado no Steam Achievement Manager e não contém nada malicioso.",
+        source: "Código-fonte",
         changelog: "Novidades",
         beta: "Teste beta"
       }
