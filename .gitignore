@@ -9,3 +9,5 @@ kfm-site.env
 *.log
 *.sqlite
 *.sqlite-*
+__pycache__/
+*.pyc

@@ -24,6 +24,7 @@ import re
 import socket
 import threading
 import time
+from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -58,6 +59,16 @@ _LOAD_PREV: dict[str, Any] = {}
 _PROC_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
 _PROC_PREV: dict[str, dict[str, Any]] = {}
 _ACCT_READY = False
+_ACCT_JUMP_CHECK_TS = 0.0
+_LIVE_LOCK = threading.Lock()
+# server_name -> latest live snapshot from mutator (or DB fallback)
+_LIVE: dict[str, dict[str, Any]] = {}
+# Per-slot tick history from live pushes (rolling peak window).
+_TICK_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
+LIVE_STALE_SEC = 45.0
+# Peak health / badge uses last N seconds; keep enough history for the load chart too.
+TICK_PEAK_WINDOW_SEC = 300  # 5 minutes
+TICK_KEEP_SEC = TICK_PEAK_WINDOW_SEC + int(LOAD_INTERVAL_SEC * LOAD_KEEP) + 30
 
 
 def _read_proc_stat() -> tuple[int, int]:
@@ -129,34 +140,36 @@ def _iptables(*args: str) -> tuple[int, str]:
 
 def _ensure_port_accounting() -> bool:
     """Idempotent UDP byte counters per game/query port (INPUT+OUTPUT)."""
-    global _ACCT_READY
-    if _ACCT_READY:
+    global _ACCT_READY, _ACCT_JUMP_CHECK_TS
+    now = time.time()
+    if _ACCT_READY and (now - _ACCT_JUMP_CHECK_TS) < 15.0:
         return True
-    chains = ("KFM_ACCT_IN", "KFM_ACCT_OUT")
-    for chain in chains:
-        rc, _ = _iptables("-L", chain, "-n")
-        if rc != 0:
+    _ACCT_JUMP_CHECK_TS = now
+    rc, _ = _iptables("-L", "KFM_ACCT_IN", "-n")
+    if rc != 0:
+        for chain in ("KFM_ACCT_IN", "KFM_ACCT_OUT"):
             _iptables("-N", chain)
-        else:
             _iptables("-F", chain)
-    for _slot, ports in SLOT_PORTS.items():
-        for port in ports:
-            _iptables("-A", "KFM_ACCT_IN", "-p", "udp", "--dport", str(port), "-j", "RETURN")
-            _iptables("-A", "KFM_ACCT_OUT", "-p", "udp", "--sport", str(port), "-j", "RETURN")
-    # Jump once from filter INPUT/OUTPUT (keep near top, after nothing critical).
+        for _slot, ports in SLOT_PORTS.items():
+            for port in ports:
+                _iptables(
+                    "-A", "KFM_ACCT_IN", "-p", "udp", "--dport", str(port), "-j", "RETURN"
+                )
+                _iptables(
+                    "-A", "KFM_ACCT_OUT", "-p", "udp", "--sport", str(port), "-j", "RETURN"
+                )
+        print("kfm-stats: created UDP port accounting chains", flush=True)
+    # Firewall reloads drop jumps but leave chains — re-attach if missing.
     rc, out = _iptables("-L", "INPUT", "-n")
     if rc == 0 and "KFM_ACCT_IN" not in out:
         _iptables("-I", "INPUT", "1", "-j", "KFM_ACCT_IN")
+        print("kfm-stats: attached KFM_ACCT_IN -> INPUT", flush=True)
     rc, out = _iptables("-L", "OUTPUT", "-n")
     if rc == 0 and "KFM_ACCT_OUT" not in out:
         _iptables("-I", "OUTPUT", "1", "-j", "KFM_ACCT_OUT")
-    # Verify we can read counters.
+        print("kfm-stats: attached KFM_ACCT_OUT -> OUTPUT", flush=True)
     rc, _ = _iptables("-L", "KFM_ACCT_IN", "-n", "-v", "-x")
     _ACCT_READY = rc == 0
-    if _ACCT_READY:
-        print("kfm-stats: UDP port accounting chains ready", flush=True)
-    else:
-        print("kfm-stats: UDP port accounting unavailable", flush=True)
     return _ACCT_READY
 
 
@@ -364,7 +377,7 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
             scope = "host"
             server = None
     now = samples[-1] if samples else None
-    return {
+    out: dict[str, Any] = {
         "interval_sec": LOAD_INTERVAL_SEC,
         "scope": scope,
         "server": server or "",
@@ -374,7 +387,302 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
         "mem_mb": [s.get("mem_mb") for s in samples],
         "net_mbps": [s["net_mbps"] for s in samples],
         "now": now,
+        "tick_ms": [],
+        "peak_tick_ms": [],
+        "peakTick": -1,
+        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
     }
+    if server:
+        with _LIVE_LOCK:
+            ticks = list(_TICK_SAMPLES.get(server) or [])
+        # Forward-fill window tick + rolling 5-min peak onto load sample timestamps.
+        tick_ms: list[float | None] = []
+        peak_ms: list[float | None] = []
+        ti = 0
+        last: float | None = None
+        lo = 0
+        win_max = -1
+        # Multiset of ms in [ts - window, ts] via two pointers (ticks sorted by ts).
+        win: deque[int] = deque()
+        for ts in out["ts"]:
+            tsi = int(ts)
+            while ti < len(ticks) and int(ticks[ti]["ts"]) <= tsi:
+                ms = int(ticks[ti]["ms"])
+                last = float(ms)
+                win.append(ms)
+                if ms >= win_max:
+                    win_max = ms
+                ti += 1
+            cutoff = tsi - TICK_PEAK_WINDOW_SEC
+            while lo < ti and int(ticks[lo]["ts"]) < cutoff:
+                dropped = win.popleft()
+                lo += 1
+                if dropped == win_max:
+                    win_max = max(win) if win else -1
+            tick_ms.append(last)
+            peak_ms.append(float(win_max) if win_max >= 0 else None)
+        out["tick_ms"] = tick_ms
+        out["peak_tick_ms"] = peak_ms
+        out["tick_ts"] = [int(t["ts"]) for t in ticks]
+        out["tick_raw"] = [int(t["ms"]) for t in ticks]
+        out["peakTick"] = _peak_tick_from_samples(ticks)
+        out["live"] = get_live_status(server)
+    # Always include all slots so tab traffic-lights stay current.
+    out["liveAll"] = {s: get_live_status(s) for s in KNOWN_SERVERS}
+    return out
+
+
+def _prune_tick_buf(buf: list[dict[str, Any]], now: int | float) -> None:
+    cutoff = int(now) - TICK_KEEP_SEC
+    while buf and int(buf[0]["ts"]) < cutoff:
+        del buf[0]
+
+
+def _peak_tick_from_samples(
+    ticks: list[dict[str, Any]],
+    *,
+    now: int | float | None = None,
+    window_sec: int = TICK_PEAK_WINDOW_SEC,
+) -> int:
+    if not ticks:
+        return -1
+    t_now = int(now if now is not None else now_ts())
+    cutoff = t_now - int(window_sec)
+    peak = -1
+    for t in ticks:
+        if int(t["ts"]) < cutoff:
+            continue
+        ms = int(t["ms"])
+        if ms > peak:
+            peak = ms
+    return peak
+
+
+def _peak_tick_for(server: str) -> int:
+    with _LIVE_LOCK:
+        return _peak_tick_from_samples(list(_TICK_SAMPLES.get(server) or []))
+
+
+def _parse_live_players(raw: str) -> list[dict[str, Any]]:
+    """players=name|perkIdx|perk|steam,name2|..."""
+    out: list[dict[str, Any]] = []
+    if not raw:
+        return out
+    for chunk in str(raw).split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split("|")
+        name = unquote_plus(parts[0]) if parts else ""
+        perk_idx = -1
+        perk = ""
+        steam = ""
+        if len(parts) > 1:
+            try:
+                perk_idx = int(parts[1])
+            except ValueError:
+                perk_idx = -1
+        if len(parts) > 2:
+            perk = unquote_plus(parts[2])
+        if len(parts) > 3:
+            steam = unquote_plus(parts[3])
+        out.append(
+            {
+                "name": name[:64],
+                "perk": perk[:32],
+                "perkIdx": perk_idx,
+                "steam": steam[:64],
+            }
+        )
+    return out
+
+
+def ingest_live(_con, p: dict[str, Any]) -> None:
+    server = str(p.get("server") or p.get("server_name") or "").strip().lower()[:64]
+    if not server or server in IGNORED_SERVERS:
+        return
+    players = _parse_live_players(str(p.get("players") or ""))
+    online = int(num(p.get("online"), len(players)))
+    map_name = str(p.get("map") or p.get("map_name") or "")[:64]
+    tick_ms = int(num(p.get("worstTick"), -1))
+    ts = now_ts()
+    snap = {
+        "server": server,
+        "map": map_name,
+        "wave": int(num(p.get("wave"), 0)),
+        "finalWave": int(num(p.get("finalWave"), num(p.get("final_wave"), 0))),
+        "online": online,
+        "players": players,
+        "worstTick": tick_ms,
+        "ts": ts,
+        "source": "live",
+    }
+    with _LIVE_LOCK:
+        if tick_ms >= 0:
+            buf = _TICK_SAMPLES.setdefault(server, [])
+            buf.append({"ts": ts, "ms": tick_ms})
+            _prune_tick_buf(buf, ts)
+        peak = _peak_tick_from_samples(_TICK_SAMPLES.get(server) or [], now=ts)
+        snap["peakTick"] = peak
+        snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
+        _LIVE[server] = snap
+
+
+def _live_from_db(con, server: str) -> dict[str, Any] | None:
+    """Fallback from open map session (may be stale until mutator live push)."""
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT `id`, `map_name`, `wave`, `final_wave`, `player_count`, `started_at`
+        FROM `site_map_sessions`
+        WHERE `server_name`=%s AND `ended_at`=0 AND `player_count`>0
+        ORDER BY `started_at` DESC LIMIT 1
+        """,
+        (server,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    # Ignore shells older than 3h without updates.
+    if now_ts() - int(row["started_at"] or 0) > 3 * 3600:
+        return None
+    cur.execute(
+        """
+        SELECT `name`, `perk_name` AS perk, `perk_index` AS perkIdx, `steam_id` AS steam
+        FROM `site_session_players`
+        WHERE `session_id`=%s AND `left_at`=0
+        ORDER BY `joined_at`
+        """,
+        (int(row["id"]),),
+    )
+    players = [
+        {
+            "name": str(r["name"] or "")[:64],
+            "perk": str(r["perk"] or "")[:32],
+            "perkIdx": int(r["perkIdx"] if r["perkIdx"] is not None else -1),
+            "steam": str(r["steam"] or "")[:64],
+        }
+        for r in cur.fetchall()
+    ]
+    return {
+        "server": server,
+        "map": str(row["map_name"] or "")[:64],
+        "wave": int(row["wave"] or 0),
+        "finalWave": int(row["final_wave"] or 0),
+        "online": max(int(row["player_count"] or 0), len(players)),
+        "players": players,
+        "worstTick": -1,
+        "ts": int(row["started_at"] or 0),
+        "source": "db",
+    }
+
+
+# Tick health thresholds (ms). Current window + 5-min peak drive the light.
+TICK_OK_MS = 50
+TICK_WARN_MS = 100
+TICK_BAD_MS = 250
+
+
+def tick_health(
+    tick_ms: int | float | None,
+    peak_ms: int | float | None = -1,
+    *,
+    stale: bool = False,
+) -> dict[str, Any]:
+    """Traffic-light health from tick latency (current + 5-min peak)."""
+    try:
+        t = int(tick_ms) if tick_ms is not None else -1
+    except (TypeError, ValueError):
+        t = -1
+    try:
+        pk = int(peak_ms) if peak_ms is not None else -1
+    except (TypeError, ValueError):
+        pk = -1
+    if stale or (t < 0 and pk < 0):
+        return {
+            "level": "unknown",
+            "label": "Нет данных",
+            "tickMs": t if t >= 0 else None,
+            "peakMs": pk if pk >= 0 else None,
+            "peakWindowSec": TICK_PEAK_WINDOW_SEC,
+        }
+    # Score by the worse of current window and recent peak.
+    score = max(t, pk)
+    if score >= TICK_BAD_MS:
+        level, label = "bad", "Плохо"
+    elif score >= TICK_WARN_MS:
+        level, label = "warn", "Средне"
+    elif score >= TICK_OK_MS:
+        level, label = "ok", "Норма"
+    else:
+        level, label = "good", "Отлично"
+    return {
+        "level": level,
+        "label": label,
+        "tickMs": t if t >= 0 else None,
+        "peakMs": pk if pk >= 0 else None,
+        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
+    }
+
+
+def _attach_health(snap: dict[str, Any]) -> dict[str, Any]:
+    snap = dict(snap)
+    peak = snap.get("peakTick", -1)
+    if peak is None or int(peak) < 0:
+        peak = snap.get("worstTick", -1)
+    snap["peakTick"] = int(peak) if peak is not None and int(peak) >= 0 else -1
+    snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
+    snap["health"] = tick_health(
+        snap.get("worstTick"),
+        snap["peakTick"],
+        stale=bool(snap.get("stale")),
+    )
+    return snap
+
+
+def get_live_status(server: str) -> dict[str, Any]:
+    empty = {
+        "server": server,
+        "map": "",
+        "wave": 0,
+        "finalWave": 0,
+        "online": 0,
+        "players": [],
+        "worstTick": -1,
+        "peakTick": -1,
+        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
+        "ts": 0,
+        "source": "none",
+        "stale": True,
+    }
+    with _LIVE_LOCK:
+        snap = dict(_LIVE.get(server) or {})
+        ticks = list(_TICK_SAMPLES.get(server) or [])
+    peak = _peak_tick_from_samples(ticks)
+    if snap:
+        age = now_ts() - int(snap.get("ts") or 0)
+        snap["stale"] = age > LIVE_STALE_SEC
+        snap["peakTick"] = peak
+        snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
+        if not snap["stale"]:
+            return _attach_health(snap)
+    # Fall back to DB if live push missing/stale (needs Handler.con).
+    con = getattr(Handler, "con", None)
+    if con is not None:
+        try:
+            with LOCK:
+                db = _live_from_db(con, server)
+            if db:
+                db["stale"] = True
+                db["peakTick"] = peak
+                db["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
+                return _attach_health(db)
+        except Exception:  # noqa: BLE001
+            pass
+    if snap:
+        return _attach_health(snap)
+    empty["peakTick"] = peak
+    return _attach_health(empty)
 
 
 def mysql_cfg() -> dict[str, Any]:
@@ -456,13 +764,39 @@ def init_schema(con) -> None:
         """
         CREATE TABLE IF NOT EXISTS `site_daily_snapshot` (
           `day` INT NOT NULL,
+          `server_name` VARCHAR(64) NOT NULL DEFAULT '',
           `peak` INT NOT NULL DEFAULT 0,
           `unique_count` INT NOT NULL DEFAULT 0,
           `updated_at` INT NOT NULL,
-          PRIMARY KEY (`day`)
+          PRIMARY KEY (`day`, `server_name`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    # Migrate pre-per-server snapshot table (PK was day only).
+    cur.execute("SHOW COLUMNS FROM `site_daily_snapshot` LIKE 'server_name'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            ALTER TABLE `site_daily_snapshot`
+              ADD COLUMN `server_name` VARCHAR(64) NOT NULL DEFAULT '' AFTER `day`
+            """
+        )
+        cur.execute("ALTER TABLE `site_daily_snapshot` DROP PRIMARY KEY")
+        cur.execute(
+            "ALTER TABLE `site_daily_snapshot` ADD PRIMARY KEY (`day`, `server_name`)"
+        )
+        print("kfm-stats: migrated site_daily_snapshot +server_name", flush=True)
+    # Drop lobby shells that never got a human player.
+    cur.execute(
+        """
+        DELETE sp FROM `site_session_players` sp
+        INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
+        WHERE ms.`player_count`<=0
+        """
+    )
+    cur.execute("DELETE FROM `site_map_sessions` WHERE `player_count`<=0")
+    if cur.rowcount:
+        print(f"kfm-stats: purged {cur.rowcount} empty map sessions", flush=True)
 
 
 def now_ts() -> int:
@@ -600,6 +934,14 @@ def ingest_map_close(con, p: dict[str, Any]) -> None:
             """,
             (ended, duration, outcome, wave, final_wave, difficulty, difficulty, day, sid, sid),
         )
+        cur.execute(
+            "SELECT `player_count` AS c FROM `site_map_sessions` WHERE `id`=%s", (sid,)
+        )
+        row = cur.fetchone()
+        # Lobby / bots-only shells: drop so they never enter charts.
+        if row is not None and int(row["c"] or 0) <= 0:
+            cur.execute("DELETE FROM `site_session_players` WHERE `session_id`=%s", (sid,))
+            cur.execute("DELETE FROM `site_map_sessions` WHERE `id`=%s", (sid,))
 
 
 def ingest_player_join(con, p: dict[str, Any]) -> None:
@@ -699,11 +1041,15 @@ def ingest_daily(con, p: dict[str, Any]) -> None:
     day = int(num(p.get("day"), 0))
     if day <= 0:
         raise ValueError("day required")
+    server_name = str(p.get("server") or p.get("server_name") or "")[:64]
+    if server_name.lower() in IGNORED_SERVERS:
+        server_name = ""
     with LOCK:
         con.cursor().execute(
             """
-            INSERT INTO `site_daily_snapshot`(`day`, `peak`, `unique_count`, `updated_at`)
-            VALUES(%s,%s,%s,%s)
+            INSERT INTO `site_daily_snapshot`
+              (`day`, `server_name`, `peak`, `unique_count`, `updated_at`)
+            VALUES(%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
               `peak`=GREATEST(`peak`, VALUES(`peak`)),
               `unique_count`=GREATEST(`unique_count`, VALUES(`unique_count`)),
@@ -711,6 +1057,7 @@ def ingest_daily(con, p: dict[str, Any]) -> None:
             """,
             (
                 day,
+                server_name,
                 int(num(p.get("peak"), 0)),
                 int(num(p.get("unique"), num(p.get("unique_count"), 0))),
                 now_ts(),
@@ -829,6 +1176,11 @@ def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tup
     return f" AND {col} IN ({placeholders})", tuple(KNOWN_SERVERS)
 
 
+def nonempty_session_sql(col: str = "`player_count`") -> str:
+    """Exclude lobby shells / bots-only map opens with no human players."""
+    return f" AND {col}>0"
+
+
 def list_servers(con) -> list[dict[str, Any]]:
     """Only the four difficulty slots (no legacy beta)."""
     cur = con.cursor()
@@ -837,7 +1189,7 @@ def list_servers(con) -> list[dict[str, Any]]:
         f"""
         SELECT `server_name` AS name, COUNT(*) AS c
         FROM `site_map_sessions`
-        WHERE `server_name` IN ({placeholders})
+        WHERE `server_name` IN ({placeholders}){nonempty_session_sql()}
         GROUP BY `server_name`
         """,
         tuple(KNOWN_SERVERS),
@@ -857,23 +1209,31 @@ def day_list(
     if server:
         cur.execute(
             f"""
-            SELECT DISTINCT `day` FROM `site_map_sessions`
-            WHERE `day` >= %s{srv_sql}
-            ORDER BY `day`
+            SELECT DISTINCT `day` FROM (
+              SELECT `day` FROM `site_map_sessions`
+              WHERE `day` >= %s{srv_sql}{nonempty_session_sql()}
+              UNION
+              SELECT `day` FROM `site_daily_snapshot`
+              WHERE `day` >= %s AND `server_name`=%s
+            ) t ORDER BY `day`
             """,
-            (min_day, *srv_args),
+            (min_day, *srv_args, min_day, server),
         )
     else:
+        placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
         cur.execute(
             f"""
             SELECT DISTINCT `day` FROM (
               SELECT `day` FROM `site_map_sessions`
-              WHERE `day` >= %s{srv_sql}
+              WHERE `day` >= %s{srv_sql}{nonempty_session_sql()}
               UNION
-              SELECT `day` FROM `site_daily_snapshot` WHERE `day` >= %s
+              SELECT `day` FROM `site_daily_snapshot`
+              WHERE `day` >= %s AND (
+                `server_name` IN ({placeholders}) OR `server_name`=''
+              )
             ) t ORDER BY `day`
             """,
-            (min_day, *srv_args, min_day),
+            (min_day, *srv_args, min_day, *KNOWN_SERVERS),
         )
     days = {int(r["day"]) for r in cur.fetchall()}
     if extra_days and not server:
@@ -883,57 +1243,108 @@ def day_list(
     return sorted(days)
 
 
+def day_start_ts(yyyymmdd: int) -> int:
+    d = parse_day(yyyymmdd)
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+
+
+def _snap_peak_unique(con, day: int, server: str | None) -> tuple[int, int]:
+    """Peak/unique from site_daily_snapshot for one day (per-server or All)."""
+    cur = con.cursor()
+    if server:
+        cur.execute(
+            """
+            SELECT `peak`, `unique_count` FROM `site_daily_snapshot`
+            WHERE `day`=%s AND `server_name`=%s
+            """,
+            (day, server),
+        )
+        row = cur.fetchone()
+        if not row:
+            return 0, 0
+        return int(row["peak"] or 0), int(row["unique_count"] or 0)
+    placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
+    cur.execute(
+        f"""
+        SELECT COALESCE(SUM(`peak`), 0) AS peak,
+               COALESCE(SUM(`unique_count`), 0) AS uniq
+        FROM `site_daily_snapshot`
+        WHERE `day`=%s AND `server_name` IN ({placeholders})
+        """,
+        (day, *KNOWN_SERVERS),
+    )
+    named = cur.fetchone() or {}
+    peak_named = int(named.get("peak") or 0)
+    uniq_named = int(named.get("uniq") or 0)
+    cur.execute(
+        """
+        SELECT `peak`, `unique_count` FROM `site_daily_snapshot`
+        WHERE `day`=%s AND `server_name`=''
+        """,
+        (day,),
+    )
+    legacy = cur.fetchone()
+    if peak_named == 0 and uniq_named == 0 and legacy:
+        return int(legacy["peak"] or 0), int(legacy["unique_count"] or 0)
+    peak_legacy = int(legacy["peak"] or 0) if legacy else 0
+    uniq_legacy = int(legacy["unique_count"] or 0) if legacy else 0
+    return max(peak_named, peak_legacy), max(uniq_named, uniq_legacy)
+
+
 def unique_by_day(con, days: list[int], server: str | None = None) -> list[int]:
     out = []
     cur = con.cursor()
     srv_sql, srv_args = server_sql(server, "ms.`server_name`")
     for d in days:
+        t0 = day_start_ts(d)
+        t1 = day_start_ts(add_days(d, 1))
+        # day column + wall-clock joins (overnight maps keep yesterday's day).
         cur.execute(
             f"""
             SELECT COUNT(DISTINCT sp.`steam_id`) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE ms.`day`=%s{srv_sql}
+            WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
+                   OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
+              {srv_sql}
             """,
-            (d, *srv_args),
+            (d, t0, t1, t0, t1, *srv_args),
         )
         from_sess = int(cur.fetchone()["c"] or 0)
-        if server:
-            out.append(from_sess)
-            continue
-        cur.execute(
-            "SELECT `unique_count` FROM `site_daily_snapshot` WHERE `day`=%s", (d,)
-        )
-        snap = cur.fetchone()
-        out.append(max(from_sess, int(snap["unique_count"] if snap else 0)))
+        _, snap_uniq = _snap_peak_unique(con, d, server)
+        out.append(max(from_sess, snap_uniq))
     return out
 
 
 def peak_by_day(con, days: list[int], server: str | None = None) -> list[int]:
     out = []
     cur = con.cursor()
-    if not server:
-        for d in days:
-            cur.execute("SELECT `peak` FROM `site_daily_snapshot` WHERE `day`=%s", (d,))
-            snap = cur.fetchone()
-            out.append(int(snap["peak"]) if snap else 0)
-        return out
-    # One map at a time per slot → peak ≈ max players in any map session that day.
     srv_sql, srv_args = server_sql(server, "ms.`server_name`")
     for d in days:
+        snap_peak, _ = _snap_peak_unique(con, d, server)
+        t0 = day_start_ts(d)
+        t1 = day_start_ts(add_days(d, 1))
+        # Sessions that overlap this calendar day (incl. still open, started recently).
         cur.execute(
             f"""
-            SELECT COALESCE(MAX(pc), 0) AS peak FROM (
-              SELECT COUNT(*) AS pc
-              FROM `site_session_players` sp
-              INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-              WHERE ms.`day`=%s{srv_sql}
-              GROUP BY ms.`id`
-            ) t
+            SELECT COALESCE(MAX(`player_count`), 0) AS peak
+            FROM `site_map_sessions` ms
+            WHERE (
+                ms.`day`=%s
+                OR (
+                  ms.`started_at` >= %s AND ms.`started_at` < %s
+                  AND (ms.`ended_at`=0 OR ms.`ended_at` >= %s)
+                )
+              )
+              {srv_sql}{nonempty_session_sql("ms.`player_count`")}
             """,
-            (d, *srv_args),
+            (d, t0 - 86400, t1, t0, *srv_args),
         )
-        out.append(int(cur.fetchone()["peak"] or 0))
+        sess_peak = int(cur.fetchone()["peak"] or 0)
+        if server:
+            out.append(max(snap_peak, sess_peak))
+        else:
+            out.append(max(snap_peak, sess_peak) if snap_peak == 0 else snap_peak)
     return out
 
 
@@ -1014,7 +1425,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur = con.cursor()
         ms_srv_sql, ms_srv_args = server_sql(server, "ms.`server_name`")
         cur.execute(
-            f"SELECT COUNT(*) AS c FROM `site_map_sessions` WHERE 1=1{srv_sql}",
+            f"SELECT COUNT(*) AS c FROM `site_map_sessions` WHERE 1=1{srv_sql}{nonempty_session_sql()}",
             srv_args,
         )
         sessions = int(cur.fetchone()["c"] or 0)
@@ -1023,7 +1434,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT COUNT(DISTINCT sp.`steam_id`) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE 1=1{ms_srv_sql}
+            WHERE 1=1{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}
             """,
             ms_srv_args,
         )
@@ -1033,7 +1444,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT sp.`perk_name` AS name, COUNT(*) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE sp.`perk_name` != ''{ms_srv_sql}
+            WHERE sp.`perk_name` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}
             GROUP BY sp.`perk_name`
             ORDER BY c DESC LIMIT 12
             """,
@@ -1043,7 +1454,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `map_name` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE `map_name` != ''{srv_sql}
+            WHERE `map_name` != ''{srv_sql}{nonempty_session_sql()}
             GROUP BY `map_name`
             ORDER BY c DESC LIMIT 12
             """,
@@ -1053,7 +1464,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `outcome` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE 1=1{srv_sql}
+            WHERE 1=1{srv_sql}{nonempty_session_sql()}
             GROUP BY `outcome`
             """,
             srv_args,
@@ -1062,7 +1473,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `wave` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE `outcome`='loss' AND `wave`>0{srv_sql}
+            WHERE `outcome`='loss' AND `wave`>0{srv_sql}{nonempty_session_sql()}
             GROUP BY `wave` ORDER BY `wave` LIMIT 20
             """,
             srv_args,
@@ -1133,8 +1544,9 @@ def migrate_sqlite_if_any(con) -> None:
             for r in rows:
                 cur.execute(
                     """
-                    INSERT INTO `site_daily_snapshot`(`day`, `peak`, `unique_count`, `updated_at`)
-                    VALUES(%s,%s,%s,%s)
+                    INSERT INTO `site_daily_snapshot`
+                      (`day`, `server_name`, `peak`, `unique_count`, `updated_at`)
+                    VALUES(%s,'',%s,%s,%s)
                     ON DUPLICATE KEY UPDATE
                       `peak`=GREATEST(`peak`, VALUES(`peak`)),
                       `unique_count`=GREATEST(`unique_count`, VALUES(`unique_count`)),
@@ -1166,6 +1578,9 @@ def ingest_payload(con, body: dict[str, Any]) -> str:
     if typ in ("player_leave", "leave", "player"):
         ingest_player_leave(con, body)
         return "player_leave"
+    if typ == "live":
+        ingest_live(con, body)
+        return "live"
     # Legacy per-player session payloads ignored (schema is map-first now).
     if typ in ("session", "batch", ""):
         return "ignored_legacy"

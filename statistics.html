@@ -5,9 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>KF Maniacs — Статистика</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
 <style>
 html,body{margin:0;padding:0;background:#111;color:#eee;font:14px/1.4 Segoe UI,Arial,sans-serif}
-.wrap{max-width:1040px;margin:0 auto;padding:24px}
+.wrap{max-width:1100px;margin:0 auto;padding:24px}
 h1{margin:0 0 6px;font-size:22px;color:#fff}
 h2{margin:28px 0 10px;font-size:16px;color:#ddd;font-weight:600}
 .sub{color:#aaa;margin:0 0 18px}
@@ -21,21 +24,50 @@ h2{margin:28px 0 10px;font-size:16px;color:#ddd;font-weight:600}
 .time b{color:#8fd16a}
 .dl b{color:#c9a0ff}
 .load b{color:#5ce6b8}
-.box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin:0 0 8px}
-canvas{width:100%;height:320px;display:block}
-canvas.pie{height:260px}
+.tick b{color:#e6a05c}
+.box{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin:0 0 8px;position:relative}
+.chart-wrap{position:relative;height:320px}
+.chart-wrap.pie{height:280px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:800px){.grid{grid-template-columns:1fr}}
 table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a2a2a}
 th{color:#888;font-weight:600}
 .err{color:#e66;padding:24px}
-.legend{display:flex;gap:10px 16px;flex-wrap:wrap;margin:8px 0 0;color:#aaa;font-size:12px}
-.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:2px;vertical-align:middle}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px}
 .tab{appearance:none;border:1px solid #333;background:#1a1a1a;color:#bbb;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
 .tab:hover{border-color:#555;color:#eee}
 .tab.active{background:#2a2a2a;border-color:#666;color:#fff;font-weight:600}
+.live-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 18px}
+@media(max-width:800px){.live-grid{grid-template-columns:1fr}}
+.live-card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px 14px}
+.live-card h3{margin:0 0 8px;font-size:14px;color:#ddd}
+.live-meta{color:#aaa;font-size:13px;margin:0 0 8px}
+.live-meta b{color:#eee;font-weight:600}
+.live-players{margin:0;padding:0;list-style:none;font-size:13px}
+.live-players li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #2a2a2a}
+.live-players li:last-child{border-bottom:0}
+.live-players .perk{color:#8fd16a}
+.live-empty{color:#666;font-size:13px;margin:0}
+.live-stale{color:#e6c35c;font-size:11px;margin:6px 0 0}
+.tick-ok{color:#8fd16a}
+.tick-warn{color:#e6c35c}
+.tick-bad{color:#e07070}
+.chart-hint{color:#666;font-size:11px;margin:4px 0 0}
+.health-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle;background:#555;box-shadow:0 0 0 1px #222}
+.health-dot.good{background:#4ade80;box-shadow:0 0 6px rgba(74,222,128,.55)}
+.health-dot.ok{background:#8fd16a;box-shadow:0 0 5px rgba(143,209,106,.4)}
+.health-dot.warn{background:#e6c35c;box-shadow:0 0 5px rgba(230,195,92,.45)}
+.health-dot.bad{background:#e07070;box-shadow:0 0 6px rgba(224,112,112,.55)}
+.health-dot.unknown{background:#555}
+.health-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:4px 10px;border-radius:4px;margin:0 0 10px;border:1px solid #333;background:#141414;color:#aaa}
+.health-eyebrow.good{border-color:#2d5a3a;color:#8fd16a;background:#132018}
+.health-eyebrow.ok{border-color:#3a5a2d;color:#8fd16a;background:#161f12}
+.health-eyebrow.warn{border-color:#5a4e2d;color:#e6c35c;background:#1f1c12}
+.health-eyebrow.bad{border-color:#5a2d2d;color:#e07070;background:#1f1212}
+.health-eyebrow.unknown{border-color:#333;color:#888}
+.health-eyebrow i{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor}
+.tab .health-dot{margin-right:8px}
 </style>
 </head>
 <body>
@@ -45,12 +77,29 @@ th{color:#888;font-weight:600}
 <script>
 (function () {
   var app = document.getElementById("app");
+  if (window.ChartZoom) Chart.register(window.ChartZoom);
 
   var OUTCOME_RU = {
     win: "Победа",
     loss: "Поражение",
     leave: "Выход",
     unknown: "Неизвестно"
+  };
+  var PIE_COLORS = [
+    "#5cc8e6", "#e6c35c", "#8fd16a", "#e23", "#c9a0ff",
+    "#5ce6b8", "#e68a5c", "#5c7ae6", "#e65ca8", "#a8e65c",
+    "#e6e05c", "#7a5ce6"
+  ];
+  var chartStore = {};
+  var activeServer = "";
+  var loadTimer = null;
+
+  var SERVER_LABELS = {
+    "": "Все",
+    normal: "Normal",
+    hard: "Hard",
+    suicidal: "Suicidal",
+    hoe: "HoE"
   };
 
   function fmtDay(n) {
@@ -64,6 +113,17 @@ th{color:#888;font-weight:600}
     m = m % 60;
     if (h > 0) return h + " ч " + m + " мин";
     return m + " мин";
+  }
+  function fmtClock(ts) {
+    var d = new Date((ts || 0) * 1000);
+    var hh = d.getHours();
+    var mm = d.getMinutes();
+    var ss = d.getSeconds();
+    return (
+      (hh < 10 ? "0" : "") + hh + ":" +
+      (mm < 10 ? "0" : "") + mm + ":" +
+      (ss < 10 ? "0" : "") + ss
+    );
   }
   function esc(s) {
     return String(s == null ? "" : s)
@@ -80,193 +140,260 @@ th{color:#888;font-weight:600}
       return { name: labelOf(it.name), c: it.c };
     });
   }
-
-  function drawLineChart(canvas, series, opts) {
-    opts = opts || {};
-    var labels = opts.labels || [];
-    var c = canvas.getContext("2d");
-    var W = (canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1));
-    var H = (canvas.height = 320 * (window.devicePixelRatio || 1));
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
-    W = canvas.clientWidth;
-    H = 320;
-    var pad = { l: 48, r: 16, t: 24, b: 48 };
-    c.fillStyle = "#1a1a1a";
-    c.fillRect(0, 0, W, H);
-    var n = labels.length;
-    if (!n) {
-      c.fillStyle = "#888";
-      c.fillText("Пока нет данных", 20, 40);
-      return;
-    }
-    var mx = opts.minMax || 1;
-    var i, j, s;
-    for (i = 0; i < series.length; i++) {
-      s = series[i].data;
-      for (j = 0; j < s.length; j++) {
-        if (s[j] == null || isNaN(s[j])) continue;
-        mx = Math.max(mx, s[j]);
-      }
-    }
-    if (mx <= 0) mx = 1;
-    function X(i) {
-      return pad.l + (W - pad.l - pad.r) * (n == 1 ? 0.5 : i / (n - 1));
-    }
-    function Y(v) {
-      return pad.t + (H - pad.t - pad.b) * (1 - v / mx);
-    }
-    c.strokeStyle = "#333";
-    c.fillStyle = "#666";
-    c.font = "11px sans-serif";
-    for (j = 0; j <= 4; j++) {
-      var v = (mx * j) / 4;
-      var yy = Y(v);
-      c.beginPath();
-      c.moveTo(pad.l, yy);
-      c.lineTo(W - pad.r, yy);
-      c.stroke();
-      c.fillText(opts.formatY ? opts.formatY(v) : Math.round(v), 6, yy + 4);
-    }
-    for (i = 0; i < series.length; i++) {
-      s = series[i];
-      c.strokeStyle = s.color;
-      c.lineWidth = 2;
-      c.beginPath();
-      var started = false;
-      for (j = 0; j < n; j++) {
-        if (s.data[j] == null || isNaN(s.data[j])) {
-          started = false;
-          continue;
-        }
-        var xx = X(j),
-          yy2 = Y(s.data[j]);
-        if (!started) {
-          c.moveTo(xx, yy2);
-          started = true;
-        } else c.lineTo(xx, yy2);
-      }
-      c.stroke();
-      c.fillStyle = s.color;
-      for (j = 0; j < n; j++) {
-        if (s.data[j] == null || isNaN(s.data[j])) continue;
-        c.beginPath();
-        c.arc(X(j), Y(s.data[j]), 3, 0, 7);
-        c.fill();
-      }
-    }
-    c.fillStyle = "#888";
-    c.font = "11px sans-serif";
-    var step = Math.max(1, Math.floor(n / 8));
-    for (j = 0; j < n; j += step) {
-      c.save();
-      c.translate(X(j), H - 12);
-      c.rotate(-0.6);
-      c.fillText(opts.formatX ? opts.formatX(labels[j]) : fmtDay(labels[j]), 0, 0);
-      c.restore();
-    }
-    var lx = pad.l;
-    for (i = 0; i < series.length; i++) {
-      c.fillStyle = series[i].color;
-      c.fillRect(lx, 8, 10, 10);
-      c.fillStyle = "#ccc";
-      c.fillText(series[i].label, lx + 14, 17);
-      lx += 14 + c.measureText(series[i].label).width + 18;
-    }
-  }
-
-  var PIE_COLORS = [
-    "#5cc8e6", "#e6c35c", "#8fd16a", "#e23", "#c9a0ff",
-    "#5ce6b8", "#e68a5c", "#5c7ae6", "#e65ca8", "#a8e65c",
-    "#e6e05c", "#7a5ce6"
-  ];
-
-  function drawPieChart(canvas, items) {
-    var c = canvas.getContext("2d");
-    var dpr = window.devicePixelRatio || 1;
-    var cssW = canvas.clientWidth || 280;
-    var cssH = 260;
-    canvas.width = cssW * dpr;
-    canvas.height = cssH * dpr;
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.scale(dpr, dpr);
-    c.fillStyle = "#1a1a1a";
-    c.fillRect(0, 0, cssW, cssH);
-
-    items = (items || []).filter(function (it) { return (it.c || 0) > 0; });
-    if (!items.length) {
-      c.fillStyle = "#888";
-      c.font = "13px sans-serif";
-      c.fillText("Нет данных", 20, 40);
-      return;
-    }
-
-    var total = 0;
-    var i;
-    for (i = 0; i < items.length; i++) total += items[i].c || 0;
-    if (total <= 0) total = 1;
-
-    var cx = Math.min(cssW * 0.38, 140);
-    var cy = cssH / 2;
-    var r = Math.min(cx, cy) - 18;
-    var start = -Math.PI / 2;
-
-    for (i = 0; i < items.length; i++) {
-      var slice = ((items[i].c || 0) / total) * Math.PI * 2;
-      c.beginPath();
-      c.moveTo(cx, cy);
-      c.arc(cx, cy, r, start, start + slice);
-      c.closePath();
-      c.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
-      c.fill();
-      c.strokeStyle = "#1a1a1a";
-      c.lineWidth = 2;
-      c.stroke();
-      start += slice;
-    }
-
-    // hole for donut look
-    c.beginPath();
-    c.arc(cx, cy, r * 0.45, 0, Math.PI * 2);
-    c.fillStyle = "#1a1a1a";
-    c.fill();
-
-    c.fillStyle = "#ccc";
-    c.font = "12px sans-serif";
-    c.textAlign = "center";
-    c.fillText(String(total), cx, cy + 4);
-
-    var lx = cx + r + 24;
-    var ly = 28;
-    c.textAlign = "left";
-    c.font = "12px sans-serif";
-    for (i = 0; i < items.length; i++) {
-      var pct = Math.round((1000 * (items[i].c || 0)) / total) / 10;
-      var label = String(items[i].name || "").replace(/^KF-/, "");
-      if (label.length > 18) label = label.slice(0, 17) + "…";
-      c.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
-      c.fillRect(lx, ly - 8, 10, 10);
-      c.fillStyle = "#ccc";
-      c.fillText(label + " — " + items[i].c + " (" + pct + "%)", lx + 16, ly);
-      ly += 18;
-      if (ly > cssH - 12) break;
-    }
-  }
-
-  var SERVER_LABELS = {
-    "": "Все",
-    normal: "Normal",
-    hard: "Hard",
-    suicidal: "Suicidal",
-    hoe: "HoE"
-  };
-
-  var activeServer = "";
-  var loadTimer = null;
-
   function tabLabel(name) {
     var k = String(name || "");
     return SERVER_LABELS[k] || SERVER_LABELS[k.toLowerCase()] || k || "Все";
+  }
+  function destroyChart(id) {
+    if (chartStore[id]) {
+      chartStore[id].destroy();
+      delete chartStore[id];
+    }
+  }
+  function destroyAllCharts() {
+    Object.keys(chartStore).forEach(destroyChart);
+  }
+
+  function zoomOpts() {
+    return {
+      pan: { enabled: true, mode: "x", modifierKey: null },
+      zoom: {
+        wheel: { enabled: true },
+        pinch: { enabled: true },
+        drag: { enabled: false },
+        mode: "x",
+      },
+      limits: { x: { min: "original", max: "original" } },
+    };
+  }
+
+  function baseTooltip() {
+    return {
+      backgroundColor: "rgba(20,20,20,0.95)",
+      titleColor: "#fff",
+      bodyColor: "#ddd",
+      borderColor: "#444",
+      borderWidth: 1,
+      padding: 10,
+      displayColors: true,
+    };
+  }
+
+  function lineDataset(label, color, data, extra) {
+    return Object.assign(
+      {
+        label: label,
+        data: data,
+        borderColor: color,
+        backgroundColor: color,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0.15,
+        spanGaps: true,
+      },
+      extra || {}
+    );
+  }
+
+  function makeLineChart(canvasId, labels, datasets, opts) {
+    opts = opts || {};
+    destroyChart(canvasId);
+    var canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === "undefined") return null;
+    var yTick = opts.formatY
+      ? function (v) { return opts.formatY(v); }
+      : undefined;
+    var chart = new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: "#ccc", boxWidth: 12, boxHeight: 12 },
+          },
+          tooltip: Object.assign(baseTooltip(), {
+            callbacks: opts.tooltipCallbacks || {},
+          }),
+          zoom: zoomOpts(),
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: "#888",
+              maxRotation: 45,
+              autoSkip: true,
+              maxTicksLimit: 12,
+            },
+            grid: { color: "#2a2a2a" },
+          },
+          y: {
+            min: opts.yMin,
+            max: opts.yMax,
+            ticks: {
+              color: "#888",
+              callback: yTick,
+            },
+            grid: { color: "#2a2a2a" },
+            title: opts.yTitle
+              ? { display: true, text: opts.yTitle, color: "#888" }
+              : undefined,
+          },
+          y1: opts.y1
+            ? {
+                position: "right",
+                min: opts.y1Min,
+                max: opts.y1Max,
+                grid: { drawOnChartArea: false },
+                ticks: {
+                  color: "#e6a05c",
+                  callback: opts.formatY1,
+                },
+                title: {
+                  display: true,
+                  text: opts.y1Title || "",
+                  color: "#e6a05c",
+                },
+              }
+            : undefined,
+        },
+      },
+    });
+    chartStore[canvasId] = chart;
+    canvas.ondblclick = function () {
+      if (chart.resetZoom) chart.resetZoom();
+    };
+    return chart;
+  }
+
+  function makePieChart(canvasId, items) {
+    destroyChart(canvasId);
+    var canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === "undefined") return null;
+    items = (items || []).filter(function (it) { return (it.c || 0) > 0; });
+    var labels = items.map(function (it) {
+      return String(it.name || "").replace(/^KF-/, "");
+    });
+    var data = items.map(function (it) { return it.c || 0; });
+    var chart = new Chart(canvas.getContext("2d"), {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            data: data,
+            backgroundColor: labels.map(function (_, i) {
+              return PIE_COLORS[i % PIE_COLORS.length];
+            }),
+            borderColor: "#1a1a1a",
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "right",
+            labels: { color: "#ccc", boxWidth: 12, font: { size: 11 } },
+          },
+          tooltip: Object.assign(baseTooltip(), {
+            callbacks: {
+              label: function (ctx) {
+                var total = ctx.dataset.data.reduce(function (a, b) {
+                  return a + b;
+                }, 0) || 1;
+                var v = ctx.parsed || 0;
+                return (
+                  " " +
+                  ctx.label +
+                  ": " +
+                  v +
+                  " (" +
+                  Math.round((1000 * v) / total) / 10 +
+                  "%)"
+                );
+              },
+            },
+          }),
+        },
+      },
+    });
+    chartStore[canvasId] = chart;
+    return chart;
+  }
+
+  function updateLoadChart(L) {
+    var labels = (L.ts || []).map(fmtClock);
+    var net = L.net_mbps || [];
+    var mxNet = 1;
+    net.forEach(function (v) {
+      if (v != null && !isNaN(v)) mxNet = Math.max(mxNet, v);
+    });
+    var datasets = [
+      lineDataset("CPU %", "#5ce6b8", L.cpu || []),
+      lineDataset(
+        L.scope === "process" ? "Память % RSS" : "Память %",
+        "#5cc8e6",
+        L.mem || []
+      ),
+      lineDataset(
+        "Сеть (× max " + (Math.round(mxNet * 10) / 10) + " Мбит/с → %)",
+        "#e6c35c",
+        net.map(function (v) {
+          if (v == null || isNaN(v)) return null;
+          return (100 * v) / mxNet;
+        })
+      ),
+    ];
+    var opts = {
+      yMin: 0,
+      yMax: 100,
+      formatY: function (v) { return Math.round(v) + "%"; },
+      tooltipCallbacks: {
+        afterBody: function (items) {
+          if (!items || !items.length) return;
+          var i = items[0].dataIndex;
+          var lines = [];
+          if (net[i] != null) lines.push("Сеть: " + net[i] + " Мбит/с");
+          if (L.scope === "process" && L.mem_mb && L.mem_mb[i] != null)
+            lines.push("RSS: " + L.mem_mb[i] + " МБ");
+          if (L.scope === "process" && L.tick_ms && L.tick_ms[i] != null)
+            lines.push("Тик (окно): " + Math.round(L.tick_ms[i]) + " мс");
+          if (L.scope === "process" && L.peak_tick_ms && L.peak_tick_ms[i] != null)
+            lines.push("Пик 5 мин: " + Math.round(L.peak_tick_ms[i]) + " мс");
+          return lines;
+        },
+      },
+    };
+    if (L.scope === "process") {
+      datasets.push(
+        lineDataset("Тик мс", "#e6a05c", L.tick_ms || [], {
+          yAxisID: "y1",
+          borderDash: [4, 3],
+        })
+      );
+      if ((L.peak_tick_ms || []).some(function (v) { return v != null; })) {
+        datasets.push(
+          lineDataset("Пик 5 мин", "#e07070", L.peak_tick_ms || [], {
+            yAxisID: "y1",
+            borderDash: [2, 4],
+            borderWidth: 1.5,
+            pointRadius: 0,
+          })
+        );
+      }
+      opts.y1 = true;
+      opts.y1Min = 0;
+      opts.y1Title = "Тик, мс";
+      opts.formatY1 = function (v) { return Math.round(v) + " мс"; };
+    }
+    return makeLineChart("cLoad", labels, datasets, opts);
   }
 
   function renderTabs(D) {
@@ -275,19 +402,26 @@ th{color:#888;font-weight:600}
       { name: "normal", label: "Normal" },
       { name: "hard", label: "Hard" },
       { name: "suicidal", label: "Suicidal" },
-      { name: "hoe", label: "HoE" }
+      { name: "hoe", label: "HoE" },
     ];
     var html = "<div class='tabs' role='tablist'>";
     for (var i = 0; i < tabs.length; i++) {
       var t = tabs[i];
       var name = t.name || "";
       var active = name === activeServer ? " active" : "";
+      var dot =
+        name === ""
+          ? ""
+          : "<span class='health-dot unknown' data-health-for='" +
+            esc(name) +
+            "' title='Здоровье'></span>";
       html +=
         "<button type='button' class='tab" +
         active +
         "' data-server='" +
         esc(name) +
         "'>" +
+        dot +
         esc(t.label || tabLabel(name)) +
         "</button>";
     }
@@ -307,7 +441,148 @@ th{color:#888;font-weight:600}
     }
   }
 
+  function fmtLiveMap(name) {
+    name = String(name || "");
+    if (name.indexOf("KF-") === 0) name = name.slice(3);
+    return name || "—";
+  }
+
+  function fmtTickBadge(ms, label) {
+    var n = Number(ms);
+    var cls;
+    if (!isFinite(n) || n < 0) return "";
+    if (n >= 250) cls = "tick-bad";
+    else if (n >= 100) cls = "tick-warn";
+    else cls = "tick-ok";
+    return (
+      " · " +
+      (label || "Тик") +
+      ": <b class='" +
+      cls +
+      "'>" +
+      Math.round(n) +
+      " мс</b>"
+    );
+  }
+
+  function healthOf(L) {
+    var h = (L && L.health) || {};
+    var level = h.level || "unknown";
+    var label = h.label || "Нет данных";
+    var peak =
+      h.peakMs != null
+        ? h.peakMs
+        : L && L.peakTick != null
+          ? L.peakTick
+          : null;
+    var ms = peak != null && peak >= 0 ? peak : h.tickMs != null ? h.tickMs : L && L.worstTick;
+    return { level: level, label: label, tickMs: ms, peakMs: peak };
+  }
+
+  function updateTabHealth(Lpayload) {
+    var all = {};
+    if (Lpayload.liveAll) all = Lpayload.liveAll;
+    else if (Lpayload.live && activeServer) all[activeServer] = Lpayload.live;
+    var dots = app.querySelectorAll("[data-health-for]");
+    for (var i = 0; i < dots.length; i++) {
+      var s = dots[i].getAttribute("data-health-for");
+      var h = healthOf(all[s] || {});
+      dots[i].className = "health-dot " + h.level;
+      dots[i].title =
+        "Здоровье: " +
+        h.label +
+        (h.tickMs != null && h.tickMs >= 0
+          ? " · пик 5 мин " + Math.round(h.tickMs) + " мс"
+          : "");
+    }
+  }
+
+  function healthEyebrow(L) {
+    var h = healthOf(L);
+    var detail =
+      h.tickMs != null && h.tickMs >= 0
+        ? " · пик 5 мин " + Math.round(h.tickMs) + " мс"
+        : "";
+    return (
+      "<div class='health-eyebrow " +
+      esc(h.level) +
+      "'><i></i> Здоровье: " +
+      esc(h.label) +
+      detail +
+      "</div>"
+    );
+  }
+
+  function renderLiveBlock(L, title) {
+    var players = L.players || [];
+    var wave =
+      L.wave > 0
+        ? "Волна <b>" +
+          L.wave +
+          (L.finalWave > 0 ? "/" + L.finalWave : "") +
+          "</b>"
+        : "Волна <b>—</b>";
+    var list = "";
+    var i;
+    if (!players.length) {
+      list = "<p class='live-empty'>Нет игроков</p>";
+    } else {
+      list = "<ul class='live-players'>";
+      for (i = 0; i < players.length; i++) {
+        list +=
+          "<li><span>" +
+          esc(players[i].name || "???") +
+          "</span><span class='perk'>" +
+          esc(players[i].perk || "—") +
+          "</span></li>";
+      }
+      list += "</ul>";
+    }
+    return (
+      "<div class='live-card'>" +
+      healthEyebrow(L) +
+      (title ? "<h3>" + esc(title) + "</h3>" : "") +
+      "<p class='live-meta'>Карта: <b>" +
+      esc(fmtLiveMap(L.map)) +
+      "</b> · " +
+      wave +
+      " · Онлайн: <b>" +
+      (L.online != null ? L.online : players.length) +
+      "</b>" +
+      fmtTickBadge(L.worstTick, "Тик окна") +
+      fmtTickBadge(L.peakTick, "Пик 5 мин") +
+      "</p>" +
+      list +
+      (L.stale && (L.map || players.length)
+        ? "<p class='live-stale'>Данные могут быть устаревшими (нет свежего live-пуша)</p>"
+        : "") +
+      "</div>"
+    );
+  }
+
+  function updateLiveUI(Lpayload) {
+    var wrap = document.getElementById("liveWrap");
+    if (!wrap) return;
+    updateTabHealth(Lpayload);
+    if (activeServer) {
+      wrap.innerHTML =
+        "<h2>Сейчас на сервере</h2>" +
+        renderLiveBlock(Lpayload.live || {}, tabLabel(activeServer));
+      return;
+    }
+    var all = Lpayload.liveAll || {};
+    var html = "<h2>Сейчас на серверах</h2><div class='live-grid'>";
+    var i, s;
+    for (i = 0; i < 4; i++) {
+      s = ["normal", "hard", "suicidal", "hoe"][i];
+      html += renderLiveBlock(all[s] || { server: s }, tabLabel(s));
+    }
+    html += "</div>";
+    wrap.innerHTML = html;
+  }
+
   function render(D) {
+    destroyAllCharts();
     var rows = "";
     for (var i = D.days.length - 1; i >= 0; i--) {
       rows +=
@@ -332,7 +607,9 @@ th{color:#888;font-weight:600}
       : "Сумма по всем серверам. Нагрузка — весь VPS. ";
     var serversBlock = activeServer
       ? ""
-      : "<div><h2>Серверы</h2><div class='box'><canvas class='pie' id='cServers'></canvas></div></div>";
+      : "<div><h2>Серверы</h2><div class='box'><div class='chart-wrap pie'><canvas id='cServers'></canvas></div></div></div>";
+    var dayLabels = (D.days || []).map(fmtDay);
+
     app.innerHTML =
       "<h1>Статистика</h1>" +
       "<p class='sub'>Скрытый раздел: пик и уникальные игроки за день, удержание, среднее время на игрока, скачивания Companion. Сессия = одна карта; игроки привязываются к сессии карты.</p>" +
@@ -340,6 +617,7 @@ th{color:#888;font-weight:600}
       "<p class='sub'>" +
       filterNote +
       "Скачивания Companion — общие.</p>" +
+      "<div id='liveWrap'></div>" +
       "<div class='cards'>" +
       "<div class='card peak'><span>Пик сегодня</span><b>" +
       D.todayPeak +
@@ -368,25 +646,29 @@ th{color:#888;font-weight:600}
       "<div class='card load'><span id='loadCpuLabel'>CPU</span><b id='loadCpu'>—</b></div>" +
       "<div class='card load'><span id='loadMemLabel'>Память</span><b id='loadMem'>—</b></div>" +
       "<div class='card load'><span id='loadNetLabel'>Сеть</span><b id='loadNet'>—</b></div>" +
+      "<div class='card tick' id='loadTickCard' style='display:none'><span>Тик окна</span><b id='loadTick'>—</b></div>" +
+      "<div class='card tick' id='loadSessTickCard' style='display:none'><span>Пик тика (5 мин)</span><b id='loadSessTick'>—</b></div>" +
       "</div>" +
-      "<div class='box'><canvas id='cLoad'></canvas></div>" +
-      "<p class='sub' id='loadHint'>Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx). Окно ~10 мин.</p>" +
+      "<div class='box'><div class='chart-wrap'><canvas id='cLoad'></canvas></div>" +
+      "<p class='chart-hint'>Колёсико — зум · перетаскивание — сдвиг · двойной клик — сброс · наведение — точные значения</p></div>" +
+      "<p class='sub' id='loadHint'>Realtime каждые 2 с.</p>" +
       "<h2>Пик и уникальные игроки</h2>" +
-      "<div class='box'><canvas id='cPeak'></canvas></div>" +
+      "<div class='box'><div class='chart-wrap'><canvas id='cPeak'></canvas></div>" +
+      "<p class='chart-hint'>Зум / сдвиг / двойной клик — сброс</p></div>" +
       "<h2>Скачивания Companion</h2>" +
-      "<div class='box'><canvas id='cDl'></canvas></div>" +
+      "<div class='box'><div class='chart-wrap'><canvas id='cDl'></canvas></div></div>" +
       "<p class='sub'>Успешные ответы Caddy на /download и KFM-Companion*.exe (из access-лога).</p>" +
       "<h2>Удержание (день 1 / день 7)</h2>" +
-      "<div class='box'><canvas id='cRet'></canvas></div>" +
+      "<div class='box'><div class='chart-wrap'><canvas id='cRet'></canvas></div></div>" +
       "<p class='sub'>Доля игроков, которые вернулись через 1 или 7 календарных дней.</p>" +
       "<h2>Среднее суммарное время на игрока за день</h2>" +
-      "<div class='box'><canvas id='cTime'></canvas></div>" +
+      "<div class='box'><div class='chart-wrap'><canvas id='cTime'></canvas></div></div>" +
       "<p class='sub'>За каждый день: среднее от суммы длительностей сессий каждого игрока.</p>" +
       "<div class='grid'>" +
-      "<div><h2>Перки</h2><div class='box'><canvas class='pie' id='cPerks'></canvas></div></div>" +
-      "<div><h2>Карты</h2><div class='box'><canvas class='pie' id='cMaps'></canvas></div></div>" +
-      "<div><h2>Исходы</h2><div class='box'><canvas class='pie' id='cOut'></canvas></div></div>" +
-      "<div><h2>Волна поражения</h2><div class='box'><canvas class='pie' id='cLoss'></canvas></div></div>" +
+      "<div><h2>Перки</h2><div class='box'><div class='chart-wrap pie'><canvas id='cPerks'></canvas></div></div></div>" +
+      "<div><h2>Карты</h2><div class='box'><div class='chart-wrap pie'><canvas id='cMaps'></canvas></div></div></div>" +
+      "<div><h2>Исходы</h2><div class='box'><div class='chart-wrap pie'><canvas id='cOut'></canvas></div></div></div>" +
+      "<div><h2>Волна поражения</h2><div class='box'><div class='chart-wrap pie'><canvas id='cLoss'></canvas></div></div></div>" +
       serversBlock +
       "</div>" +
       "<h2>История</h2>" +
@@ -397,88 +679,53 @@ th{color:#888;font-weight:600}
 
     bindTabs();
 
-    drawLineChart(document.getElementById("cPeak"), [
-      { label: "Пик", color: "#ee2233", data: D.peak },
-      { label: "Уникальные", color: "#e6c35c", data: D.unique },
-    ], { labels: D.days });
+    makeLineChart("cPeak", dayLabels, [
+      lineDataset("Пик", "#ee2233", D.peak),
+      lineDataset("Уникальные", "#e6c35c", D.unique),
+    ]);
+    makeLineChart("cDl", dayLabels, [
+      lineDataset("Скачивания", "#c9a0ff", D.downloads || []),
+    ]);
+    makeLineChart(
+      "cRet",
+      dayLabels,
+      [
+        lineDataset("Д1 %", "#5cc8e6", D.retention_d1),
+        lineDataset("Д7 %", "#c65ce6", D.retention_d7),
+      ],
+      {
+        yMin: 0,
+        yMax: 100,
+        formatY: function (v) { return Math.round(v) + "%"; },
+      }
+    );
+    makeLineChart(
+      "cTime",
+      dayLabels,
+      [lineDataset("Ср. на игрока", "#8fd16a", D.avg_playtime_sec)],
+      {
+        formatY: function (v) { return fmtDur(v); },
+        tooltipCallbacks: {
+          label: function (ctx) {
+            return " " + ctx.dataset.label + ": " + fmtDur(ctx.parsed.y);
+          },
+        },
+      }
+    );
 
-    drawLineChart(document.getElementById("cDl"), [
-      { label: "Скачивания", color: "#c9a0ff", data: D.downloads || [] },
-    ], { labels: D.days });
-
-    drawLineChart(document.getElementById("cRet"), [
-      { label: "Д1 %", color: "#5cc8e6", data: D.retention_d1 },
-      { label: "Д7 %", color: "#c65ce6", data: D.retention_d7 },
-    ], { labels: D.days, minMax: 100, formatY: function (v) { return Math.round(v) + "%"; } });
-
-    drawLineChart(document.getElementById("cTime"), [
-      { label: "Ср. на игрока", color: "#8fd16a", data: D.avg_playtime_sec },
-    ], {
-      labels: D.days,
-      formatY: function (v) { return fmtDur(v); },
-    });
-
-    drawPieChart(document.getElementById("cPerks"), D.perks);
-    drawPieChart(document.getElementById("cMaps"), D.maps);
-    drawPieChart(document.getElementById("cOut"), localizeList(D.outcomes));
-    drawPieChart(
-      document.getElementById("cLoss"),
+    makePieChart("cPerks", D.perks);
+    makePieChart("cMaps", D.maps);
+    makePieChart("cOut", localizeList(D.outcomes));
+    makePieChart(
+      "cLoss",
       (D.loss_waves || []).map(function (it) {
         return { name: "Волна " + it.name, c: it.c };
       })
     );
-    var cSrv = document.getElementById("cServers");
-    if (cSrv) drawPieChart(cSrv, D.servers || []);
+    if (document.getElementById("cServers"))
+      makePieChart("cServers", D.servers || []);
+
     startLoadMonitor();
-  }
-
-  function fmtClock(ts) {
-    var d = new Date((ts || 0) * 1000);
-    var hh = d.getHours();
-    var mm = d.getMinutes();
-    var ss = d.getSeconds();
-    return (
-      (hh < 10 ? "0" : "") + hh + ":" +
-      (mm < 10 ? "0" : "") + mm + ":" +
-      (ss < 10 ? "0" : "") + ss
-    );
-  }
-
-  function drawLoadChart(canvas, L) {
-    var labels = (L.ts || []).map(fmtClock);
-    var net = L.net_mbps || [];
-    var mxNet = 1;
-    net.forEach(function (v) {
-      if (v != null && !isNaN(v)) mxNet = Math.max(mxNet, v);
-    });
-    // Scale net onto 0..100 so it shares one axis with CPU/mem; legend shows real Mbps.
-    var netScaled = net.map(function (v) {
-      if (v == null || isNaN(v)) return null;
-      return (100 * v) / mxNet;
-    });
-    var memLabel = L.scope === "process" ? "Память % RSS" : "Память %";
-    drawLineChart(
-      canvas,
-      [
-        { label: "CPU %", color: "#5ce6b8", data: L.cpu || [] },
-        { label: memLabel, color: "#5cc8e6", data: L.mem || [] },
-        {
-          label: "Сеть (max " + (Math.round(mxNet * 10) / 10) + " Мбит/с)",
-          color: "#e6c35c",
-          data: netScaled,
-        },
-      ],
-      {
-        labels: labels,
-        minMax: 100,
-        formatY: function (v) {
-          return Math.round(v) + "%";
-        },
-        formatX: function (v) {
-          return v;
-        },
-      }
-    );
   }
 
   function refreshLoad() {
@@ -495,11 +742,15 @@ th{color:#888;font-weight:600}
         var elCpu = document.getElementById("loadCpu");
         var elMem = document.getElementById("loadMem");
         var elNet = document.getElementById("loadNet");
+        var elTick = document.getElementById("loadTick");
+        var elSess = document.getElementById("loadSessTick");
+        var cardTick = document.getElementById("loadTickCard");
+        var cardSess = document.getElementById("loadSessTickCard");
         var elTitle = document.getElementById("loadTitle");
         var elHint = document.getElementById("loadHint");
         var elMemLabel = document.getElementById("loadMemLabel");
-        var canvas = document.getElementById("cLoad");
-        if (!canvas) return;
+        if (!document.getElementById("cLoad")) return;
+        updateLiveUI(L);
         if (elTitle) {
           elTitle.textContent =
             L.scope === "process"
@@ -509,12 +760,11 @@ th{color:#888;font-weight:600}
         if (elHint) {
           elHint.textContent =
             L.scope === "process"
-              ? "Realtime каждые 2 с по процессу ucc-bin: доля CPU хоста, RSS, UDP на портах слота (игра+query). Окно ~10 мин."
+              ? "Realtime каждые 2 с: CPU/RSS/сеть процесса + тик с live-пуша (окно ~5 с) и худший тик текущей карты."
               : "Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx) всего хоста. Окно ~10 мин.";
         }
-        if (elMemLabel) {
+        if (elMemLabel)
           elMemLabel.textContent = L.scope === "process" ? "Память RSS" : "Память";
-        }
         if (elCpu) elCpu.textContent = now.cpu != null ? now.cpu + "%" : "—";
         if (elMem) {
           if (L.scope === "process" && now.mem_mb != null) {
@@ -527,7 +777,35 @@ th{color:#888;font-weight:600}
         if (elNet)
           elNet.textContent =
             now.net_mbps != null ? now.net_mbps + " Мбит/с" : "—";
-        drawLoadChart(canvas, L);
+
+        var liveTick =
+          L.live && L.live.worstTick != null ? L.live.worstTick : null;
+        var ticks = L.tick_ms || [];
+        var lastTick = null;
+        for (var i = ticks.length - 1; i >= 0; i--) {
+          if (ticks[i] != null) {
+            lastTick = ticks[i];
+            break;
+          }
+        }
+        if (liveTick != null && liveTick >= 0) lastTick = liveTick;
+        if (cardTick && elTick) {
+          if (L.scope === "process" && lastTick != null && lastTick >= 0) {
+            cardTick.style.display = "";
+            elTick.textContent = Math.round(lastTick) + " мс";
+          } else {
+            cardTick.style.display = "none";
+          }
+        }
+        if (cardSess && elSess) {
+          if (L.scope === "process" && L.peakTick >= 0) {
+            cardSess.style.display = "";
+            elSess.textContent = L.peakTick + " мс";
+          } else {
+            cardSess.style.display = "none";
+          }
+        }
+        updateLoadChart(L);
       })
       .catch(function () {});
   }
@@ -542,6 +820,8 @@ th{color:#888;font-weight:600}
     var q = activeServer
       ? "/api/stats/summary?server=" + encodeURIComponent(activeServer)
       : "/api/stats/summary";
+    if (loadTimer) clearInterval(loadTimer);
+    destroyAllCharts();
     app.innerHTML = "<p class='sub'>Загрузка…</p>";
     fetch(q, { cache: "no-store" })
       .then(function (r) {
