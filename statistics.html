@@ -38,18 +38,22 @@ th{color:#888;font-weight:600}
 .tab{appearance:none;border:1px solid #333;background:#1a1a1a;color:#bbb;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
 .tab:hover{border-color:#555;color:#eee}
 .tab.active{background:#2a2a2a;border-color:#666;color:#fff;font-weight:600}
-.live-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 18px}
+.live-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 18px}
 @media(max-width:800px){.live-grid{grid-template-columns:1fr}}
-.live-card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px 14px}
-.live-card h3{margin:0 0 8px;font-size:14px;color:#ddd}
-.live-meta{color:#aaa;font-size:13px;margin:0 0 8px}
+.live-card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px 12px;font-size:12px}
+.live-card h3{margin:0 0 6px;font-size:13px;color:#ddd;font-weight:600}
+.live-meta{color:#aaa;font-size:11px;margin:0 0 6px;line-height:1.45}
 .live-meta b{color:#eee;font-weight:600}
-.live-players{margin:0;padding:0;list-style:none;font-size:13px}
-.live-players li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #2a2a2a}
+.live-players{margin:0;padding:0;list-style:none;font-size:11px}
+.live-players li{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid #2a2a2a}
 .live-players li:last-child{border-bottom:0}
 .live-players .perk{color:#8fd16a}
-.live-empty{color:#666;font-size:13px;margin:0}
-.live-stale{color:#e6c35c;font-size:11px;margin:6px 0 0}
+.live-empty{color:#666;font-size:11px;margin:0}
+.live-stale{color:#e6c35c;font-size:10px;margin:5px 0 0}
+.live-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px}
+.live-head h2{margin:0}
+.live-head-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.live-admin{margin-top:8px;padding-top:8px;border-top:1px solid #2a2a2a}
 .tick-ok{color:#8fd16a}
 .tick-warn{color:#e6c35c}
 .tick-bad{color:#e07070}
@@ -60,14 +64,30 @@ th{color:#888;font-weight:600}
 .health-dot.warn{background:#e6c35c;box-shadow:0 0 5px rgba(230,195,92,.45)}
 .health-dot.bad{background:#e07070;box-shadow:0 0 6px rgba(224,112,112,.55)}
 .health-dot.unknown{background:#555}
-.health-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:4px 10px;border-radius:4px;margin:0 0 10px;border:1px solid #333;background:#141414;color:#aaa}
+.health-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:4px;margin:0 0 8px;border:1px solid #333;background:#141414;color:#aaa}
 .health-eyebrow.good{border-color:#2d5a3a;color:#8fd16a;background:#132018}
 .health-eyebrow.ok{border-color:#3a5a2d;color:#8fd16a;background:#161f12}
 .health-eyebrow.warn{border-color:#5a4e2d;color:#e6c35c;background:#1f1c12}
 .health-eyebrow.bad{border-color:#5a2d2d;color:#e07070;background:#1f1212}
 .health-eyebrow.unknown{border-color:#333;color:#888}
-.health-eyebrow i{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor}
+.health-eyebrow i{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor}
 .tab .health-dot{margin-right:8px}
+.login-wrap{max-width:360px;margin:80px auto;padding:24px;background:#1a1a1a;border:1px solid #333;border-radius:10px}
+.login-wrap h1{font-size:18px;margin:0 0 8px}
+.login-wrap p{color:#888;margin:0 0 16px;font-size:13px}
+.login-wrap input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:6px;border:1px solid #444;background:#111;color:#eee;font:inherit;margin:0 0 12px}
+.login-wrap button,.btn{appearance:none;border:1px solid #555;background:#2a2a2a;color:#eee;padding:5px 10px;border-radius:5px;cursor:pointer;font:11px/1.3 Segoe UI,Arial,sans-serif}
+.login-wrap button:hover,.btn:hover{border-color:#777;background:#333}
+.btn.danger{border-color:#633;color:#e07070}
+.btn.danger:hover{background:#2a1515}
+.btn.primary{border-color:#3a5a2d;color:#8fd16a}
+.btn:disabled{opacity:.5;cursor:wait}
+.admin-actions{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.admin-actions select{max-width:160px;padding:4px 6px;border-radius:5px;border:1px solid #444;background:#111;color:#eee;font:11px/1.3 Segoe UI,Arial,sans-serif}
+.admin-log{display:none;margin-top:6px;max-height:260px;overflow:auto;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:5px;padding:8px;font:10px/1.35 Consolas,Menlo,monospace;color:#bbb;white-space:pre-wrap;word-break:break-all}
+.admin-log.open{display:block}
+.admin-msg{font-size:10px;color:#8fd16a;margin:4px 0 0;min-height:1.1em}
+.admin-msg.err{color:#e07070}
 </style>
 </head>
 <body>
@@ -93,14 +113,20 @@ th{color:#888;font-weight:600}
   var chartStore = {};
   var activeServer = "";
   var loadTimer = null;
+  var mapList = [];
+  var adminBusy = false;
 
+  var ADMIN_SERVERS = ["normal", "vote"];
   var SERVER_LABELS = {
     "": "Все",
     normal: "Normal",
-    hard: "Hard",
-    suicidal: "Suicidal",
-    hoe: "HoE"
+    vote: "Difficulty Vote"
   };
+  var SERVER_ALIASES = { hoe: "vote" };
+  function canonServer(name) {
+    var k = String(name || "").toLowerCase();
+    return SERVER_ALIASES[k] || k;
+  }
 
   function fmtDay(n) {
     n = "" + n;
@@ -141,8 +167,9 @@ th{color:#888;font-weight:600}
     });
   }
   function tabLabel(name) {
-    var k = String(name || "");
-    return SERVER_LABELS[k] || SERVER_LABELS[k.toLowerCase()] || k || "Все";
+    var k = canonServer(name);
+    if (!k) return "Все";
+    return SERVER_LABELS[k] || k;
   }
   function destroyChart(id) {
     if (chartStore[id]) {
@@ -396,13 +423,461 @@ th{color:#888;font-weight:600}
     return makeLineChart("cLoad", labels, datasets, opts);
   }
 
+  function api(path, opts) {
+    opts = opts || {};
+    var init = {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: opts.headers || {},
+    };
+    if (opts.method) init.method = opts.method;
+    if (opts.body != null) {
+      init.method = init.method || "POST";
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(opts.body);
+    }
+    return fetch(path, init).then(function (r) {
+      return r.json().catch(function () {
+        return {};
+      }).then(function (j) {
+        if (r.status === 401 && j && j.auth) {
+          var err = new Error("auth");
+          err.auth = true;
+          throw err;
+        }
+        if (!r.ok) {
+          throw new Error((j && j.error) || "HTTP " + r.status);
+        }
+        return j;
+      });
+    });
+  }
+
+  function showLogin(msg) {
+    if (loadTimer) clearInterval(loadTimer);
+    destroyAllCharts();
+    app.innerHTML =
+      "<div class='login-wrap'>" +
+      "<h1>Статистика</h1>" +
+      "<p>Раздел закрыт паролем.</p>" +
+      (msg ? "<p class='err'>" + esc(msg) + "</p>" : "") +
+      "<form id='loginForm'>" +
+      "<input type='password' id='loginPw' placeholder='Пароль' autocomplete='current-password' autofocus>" +
+      "<button type='submit'>Войти</button>" +
+      "</form></div>";
+    document.getElementById("loginForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var pw = document.getElementById("loginPw").value;
+      api("/api/stats/login", { body: { password: pw } })
+        .then(function () {
+          loadSummary();
+        })
+        .catch(function (err) {
+          showLogin(err.message === "bad password" || /password/i.test(err.message)
+            ? "Неверный пароль"
+            : err.message);
+        });
+    });
+  }
+
+  function logout() {
+    api("/api/stats/logout", { method: "POST", body: {} }).finally(function () {
+      showLogin();
+    });
+  }
+
+  function mapOptionsHtml(selected) {
+    var html = "<option value=''>— карта —</option>";
+    for (var i = 0; i < mapList.length; i++) {
+      var m = mapList[i];
+      var sel = m === selected ? " selected" : "";
+      html += "<option value='" + esc(m) + "'" + sel + ">" + esc(m) + "</option>";
+    }
+    return html;
+  }
+
+  function setAdminMsg(el, text, isErr) {
+    if (!el) return;
+    el.className = "admin-msg" + (isErr ? " err" : "");
+    el.textContent = text || "";
+  }
+
+  function withBusy(btn, fn) {
+    if (adminBusy) return;
+    adminBusy = true;
+    var buttons = app.querySelectorAll(
+      ".admin-actions button, .live-head-actions button"
+    );
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+    Promise.resolve()
+      .then(fn)
+      .catch(function () {})
+      .then(function () {
+        adminBusy = false;
+        var b2 = app.querySelectorAll(
+          ".admin-actions button, .live-head-actions button"
+        );
+        for (var j = 0; j < b2.length; j++) b2[j].disabled = false;
+      });
+  }
+
+  function doRestart(server, msgEl) {
+    withBusy(null, function () {
+      setAdminMsg(msgEl, "Рестарт…");
+      return api("/api/stats/admin/restart", {
+        body: { server: server || "all" },
+      }).then(function (r) {
+        setAdminMsg(
+          msgEl,
+          r.ok
+            ? "Готово: " + (server || "все")
+            : "Ошибка: " + (r.error || r.stderr || r.rc || "fail"),
+          !r.ok
+        );
+      }).catch(function (e) {
+        setAdminMsg(msgEl, e.message, true);
+      });
+    });
+  }
+
+  function doChangeMap(server, mapName, msgEl) {
+    if (!mapName) {
+      setAdminMsg(msgEl, "Выбери карту", true);
+      return;
+    }
+    withBusy(null, function () {
+      setAdminMsg(msgEl, "Смена карты → " + mapName + "…");
+      return api("/api/stats/admin/map", {
+        body: { server: server, map: mapName },
+      }).then(function (r) {
+        setAdminMsg(
+          msgEl,
+          r.ok ? "Карта: " + (r.map || mapName) : "Ошибка: " + (r.error || "fail"),
+          !r.ok
+        );
+      }).catch(function (e) {
+        setAdminMsg(msgEl, e.message, true);
+      });
+    });
+  }
+
+  function doShowLog(server, preEl, msgEl) {
+    setAdminMsg(msgEl, "Читаю лог…");
+    api("/api/stats/admin/logs?server=" + encodeURIComponent(server) + "&lines=250")
+      .then(function (r) {
+        preEl.textContent = r.text || "(пусто)";
+        preEl.classList.add("open");
+        setAdminMsg(
+          msgEl,
+          "Лог " + server + " · " + Math.round((r.size || 0) / 1024) + " КБ"
+        );
+      })
+      .catch(function (e) {
+        setAdminMsg(msgEl, e.message, true);
+      });
+  }
+
+  function downloadLogFile(server) {
+    return fetch(
+      "/api/stats/admin/logs?server=" +
+        encodeURIComponent(server) +
+        "&download=1",
+      { credentials: "same-origin", cache: "no-store" }
+    ).then(function (r) {
+      if (r.status === 401) {
+        showLogin();
+        throw new Error("auth");
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.blob().then(function (blob) {
+        var a = document.createElement("a");
+        var url = URL.createObjectURL(blob);
+        a.href = url;
+        a.download = "kfm-" + server + ".log";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () {
+          URL.revokeObjectURL(url);
+        }, 2000);
+      });
+    });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (!document.execCommand("copy")) reject(new Error("copy failed"));
+        else resolve();
+      } catch (e) {
+        reject(e);
+      }
+      ta.remove();
+    });
+  }
+
+  function doCopyLog(server, msgEl) {
+    setAdminMsg(msgEl, "Копирую полный лог…");
+    api(
+      "/api/stats/admin/logs?server=" +
+        encodeURIComponent(server) +
+        "&full=1"
+    )
+      .then(function (r) {
+        if (r.tooLarge) {
+          setAdminMsg(
+            msgEl,
+            "Лог " +
+              Math.round((r.size || 0) / 1048576) +
+              " МБ — слишком большой для буфера, скачиваю…"
+          );
+          return downloadLogFile(server).then(function () {
+            setAdminMsg(
+              msgEl,
+              "Скачан полный лог (" +
+                Math.round((r.size || 0) / 1048576) +
+                " МБ)"
+            );
+          });
+        }
+        var text = r.text || "";
+        return copyText(text).then(function () {
+          setAdminMsg(
+            msgEl,
+            "Полный лог скопирован (" +
+              Math.round((r.size || 0) / 1024) +
+              " КБ)"
+          );
+        });
+      })
+      .catch(function (e) {
+        if (e && e.auth) return;
+        setAdminMsg(msgEl, e.message, true);
+      });
+  }
+
+  function renderLiveAdmin(server) {
+    return (
+      "<div class='live-admin'>" +
+      "<div class='admin-actions'>" +
+      "<button type='button' class='btn danger' data-act='restart'>Рестарт</button>" +
+      "<select data-act='map'>" +
+      mapOptionsHtml("") +
+      "</select>" +
+      "<button type='button' class='btn primary' data-act='setmap'>Карта</button>" +
+      "<button type='button' class='btn' data-act='log'>Лог</button>" +
+      "<button type='button' class='btn' data-act='copylog'>Копировать</button>" +
+      "<button type='button' class='btn' data-act='dllog'>Скачать</button>" +
+      "</div>" +
+      "<p class='admin-msg' data-act='msg'></p>" +
+      "<pre class='admin-log' data-act='logpre'></pre>" +
+      "</div>"
+    );
+  }
+
+  function renderLiveBody(L, title) {
+    var players = L.players || [];
+    var wave =
+      L.wave > 0
+        ? "Волна <b>" +
+          L.wave +
+          (L.finalWave > 0 ? "/" + L.finalWave : "") +
+          "</b>"
+        : "Волна <b>—</b>";
+    var list = "";
+    var i;
+    if (!players.length) {
+      list = "<p class='live-empty'>Нет игроков</p>";
+    } else {
+      list = "<ul class='live-players'>";
+      for (i = 0; i < players.length; i++) {
+        list +=
+          "<li><span>" +
+          esc(players[i].name || "???") +
+          "</span><span class='perk'>" +
+          esc(players[i].perk || "—") +
+          "</span></li>";
+      }
+      list += "</ul>";
+    }
+    return (
+      healthEyebrow(L) +
+      (title ? "<h3>" + esc(title) + "</h3>" : "") +
+      "<p class='live-meta'>Карта: <b>" +
+      esc(fmtLiveMap(L.map)) +
+      "</b> · " +
+      wave +
+      " · Онлайн: <b>" +
+      (L.online != null ? L.online : players.length) +
+      "</b>" +
+      fmtTickBadge(L.worstTick, "Тик окна") +
+      fmtTickBadge(L.peakTick, "Пик 5 мин") +
+      "</p>" +
+      list +
+      (L.stale && (L.map || players.length)
+        ? "<p class='live-stale'>Данные могут быть устаревшими (нет свежего live-пуша)</p>"
+        : "")
+    );
+  }
+
+  function renderLiveBlock(L, title, server) {
+    server = server || L.server || activeServer || "";
+    return (
+      "<div class='live-card' data-admin='" +
+      esc(server) +
+      "'>" +
+      "<div class='live-body'>" +
+      renderLiveBody(L, title) +
+      "</div>" +
+      renderLiveAdmin(server) +
+      "</div>"
+    );
+  }
+
+  function liveHeadHtml(title) {
+    return (
+      "<div class='live-head'>" +
+      "<h2>" +
+      esc(title) +
+      "</h2>" +
+      "<div class='live-head-actions'>" +
+      "<button type='button' class='btn danger' id='btnRestartAll'>Рестарт всех</button>" +
+      "<span class='admin-msg' id='adminAllMsg'></span>" +
+      "<button type='button' class='btn' id='btnLogout'>Выйти</button>" +
+      "</div></div>"
+    );
+  }
+
+  function bindLiveAdmin(wrap) {
+    if (!wrap || wrap.dataset.adminBound === "1") return;
+    wrap.dataset.adminBound = "1";
+    wrap.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!t || !t.getAttribute) return;
+      if (t.id === "btnLogout") {
+        logout();
+        return;
+      }
+      if (t.id === "btnRestartAll") {
+        if (!confirm("Рестартнуть все серверы?")) return;
+        doRestart("all", document.getElementById("adminAllMsg"));
+        return;
+      }
+      var act = t.getAttribute("data-act");
+      if (!act || act === "map" || act === "msg") return;
+      var card = t.closest("[data-admin]");
+      if (!card || !wrap.contains(card)) return;
+      var s = card.getAttribute("data-admin");
+      var msg = card.querySelector("[data-act='msg']");
+      var pre = card.querySelector("[data-act='logpre']");
+      var sel = card.querySelector("select[data-act='map']");
+      if (act === "restart") {
+        if (!confirm("Рестарт " + tabLabel(s) + "?")) return;
+        doRestart(s, msg);
+      } else if (act === "setmap") {
+        var mapName = sel ? sel.value : "";
+        if (!mapName) {
+          setAdminMsg(msg, "Выбери карту", true);
+          return;
+        }
+        if (!confirm("Сменить карту на " + tabLabel(s) + " → " + mapName + "?"))
+          return;
+        doChangeMap(s, mapName, msg);
+      } else if (act === "log") {
+        if (pre && pre.classList.contains("open") && pre.textContent) {
+          pre.classList.remove("open");
+          return;
+        }
+        doShowLog(s, pre, msg);
+      } else if (act === "copylog") {
+        doCopyLog(s, msg);
+      } else if (act === "dllog") {
+        setAdminMsg(msg, "Скачиваю полный лог…");
+        downloadLogFile(s)
+          .then(function () {
+            setAdminMsg(msg, "Полный лог скачан");
+          })
+          .catch(function (e) {
+            if (e && e.message === "auth") return;
+            setAdminMsg(msg, e.message || "ошибка", true);
+          });
+      }
+    });
+  }
+
+  function updateLiveUI(Lpayload) {
+    var wrap = document.getElementById("liveWrap");
+    if (!wrap) return;
+    updateTabHealth(Lpayload);
+    var scope = activeServer || "all";
+    var slots = activeServer ? [activeServer] : ADMIN_SERVERS.slice();
+    var title = activeServer
+      ? "Сейчас на сервере"
+      : "Сейчас на серверах";
+    var needRebuild = wrap.dataset.scope !== scope;
+    var i, s, card, body, L;
+    if (!needRebuild) {
+      for (i = 0; i < slots.length; i++) {
+        if (!wrap.querySelector("[data-admin='" + slots[i] + "']")) {
+          needRebuild = true;
+          break;
+        }
+      }
+    }
+    if (needRebuild) {
+      var html = liveHeadHtml(title);
+      if (activeServer) {
+        L = Lpayload.live || {};
+        html += renderLiveBlock(L, tabLabel(activeServer), activeServer);
+      } else {
+        var all = Lpayload.liveAll || {};
+        html += "<div class='live-grid'>";
+        for (i = 0; i < slots.length; i++) {
+          s = slots[i];
+          html += renderLiveBlock(all[s] || { server: s }, tabLabel(s), s);
+        }
+        html += "</div>";
+      }
+      wrap.dataset.adminBound = "";
+      wrap.dataset.scope = scope;
+      wrap.innerHTML = html;
+      bindLiveAdmin(wrap);
+      return;
+    }
+    for (i = 0; i < slots.length; i++) {
+      s = slots[i];
+      card = wrap.querySelector("[data-admin='" + s + "']");
+      if (!card) continue;
+      body = card.querySelector(".live-body");
+      if (!body) continue;
+      L = activeServer
+        ? Lpayload.live || {}
+        : (Lpayload.liveAll || {})[s] || { server: s };
+      body.innerHTML = renderLiveBody(L, tabLabel(s));
+    }
+  }
+
+  function ensureMaps() {
+    if (mapList.length) return Promise.resolve();
+    return api("/api/stats/admin/maps").then(function (r) {
+      mapList = r.maps || [];
+    });
+  }
+
   function renderTabs(D) {
     var tabs = D.serverTabs || [
       { name: "", label: "Все" },
       { name: "normal", label: "Normal" },
-      { name: "hard", label: "Hard" },
-      { name: "suicidal", label: "Suicidal" },
-      { name: "hoe", label: "HoE" },
+      { name: "vote", label: "Difficulty Vote" },
     ];
     var html = "<div class='tabs' role='tablist'>";
     for (var i = 0; i < tabs.length; i++) {
@@ -433,7 +908,7 @@ th{color:#888;font-weight:600}
     var buttons = app.querySelectorAll(".tab");
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].addEventListener("click", function () {
-        var next = this.getAttribute("data-server") || "";
+        var next = canonServer(this.getAttribute("data-server") || "");
         if (next === activeServer) return;
         activeServer = next;
         loadSummary();
@@ -513,74 +988,6 @@ th{color:#888;font-weight:600}
     );
   }
 
-  function renderLiveBlock(L, title) {
-    var players = L.players || [];
-    var wave =
-      L.wave > 0
-        ? "Волна <b>" +
-          L.wave +
-          (L.finalWave > 0 ? "/" + L.finalWave : "") +
-          "</b>"
-        : "Волна <b>—</b>";
-    var list = "";
-    var i;
-    if (!players.length) {
-      list = "<p class='live-empty'>Нет игроков</p>";
-    } else {
-      list = "<ul class='live-players'>";
-      for (i = 0; i < players.length; i++) {
-        list +=
-          "<li><span>" +
-          esc(players[i].name || "???") +
-          "</span><span class='perk'>" +
-          esc(players[i].perk || "—") +
-          "</span></li>";
-      }
-      list += "</ul>";
-    }
-    return (
-      "<div class='live-card'>" +
-      healthEyebrow(L) +
-      (title ? "<h3>" + esc(title) + "</h3>" : "") +
-      "<p class='live-meta'>Карта: <b>" +
-      esc(fmtLiveMap(L.map)) +
-      "</b> · " +
-      wave +
-      " · Онлайн: <b>" +
-      (L.online != null ? L.online : players.length) +
-      "</b>" +
-      fmtTickBadge(L.worstTick, "Тик окна") +
-      fmtTickBadge(L.peakTick, "Пик 5 мин") +
-      "</p>" +
-      list +
-      (L.stale && (L.map || players.length)
-        ? "<p class='live-stale'>Данные могут быть устаревшими (нет свежего live-пуша)</p>"
-        : "") +
-      "</div>"
-    );
-  }
-
-  function updateLiveUI(Lpayload) {
-    var wrap = document.getElementById("liveWrap");
-    if (!wrap) return;
-    updateTabHealth(Lpayload);
-    if (activeServer) {
-      wrap.innerHTML =
-        "<h2>Сейчас на сервере</h2>" +
-        renderLiveBlock(Lpayload.live || {}, tabLabel(activeServer));
-      return;
-    }
-    var all = Lpayload.liveAll || {};
-    var html = "<h2>Сейчас на серверах</h2><div class='live-grid'>";
-    var i, s;
-    for (i = 0; i < 4; i++) {
-      s = ["normal", "hard", "suicidal", "hoe"][i];
-      html += renderLiveBlock(all[s] || { server: s }, tabLabel(s));
-    }
-    html += "</div>";
-    wrap.innerHTML = html;
-  }
-
   function render(D) {
     destroyAllCharts();
     var rows = "";
@@ -604,7 +1011,7 @@ th{color:#888;font-weight:600}
     }
     var filterNote = activeServer
       ? "Сервер: <b>" + esc(tabLabel(activeServer)) + "</b>. Нагрузка — процесс этого слота. "
-      : "Сумма по всем серверам. Нагрузка — весь VPS. ";
+      : "Уникальные — разные люди на всех серверах. Пик — сумма пиков серверов. Нагрузка — весь VPS. ";
     var serversBlock = activeServer
       ? ""
       : "<div><h2>Серверы</h2><div class='box'><div class='chart-wrap pie'><canvas id='cServers'></canvas></div></div></div>";
@@ -612,7 +1019,7 @@ th{color:#888;font-weight:600}
 
     app.innerHTML =
       "<h1>Статистика</h1>" +
-      "<p class='sub'>Скрытый раздел: пик и уникальные игроки за день, удержание, среднее время на игрока, скачивания Companion. Сессия = одна карта; игроки привязываются к сессии карты.</p>" +
+      "<p class='sub'>Пик и уникальные игроки за день, удержание, среднее время на игрока, скачивания Companion. Сессия = одна карта.</p>" +
       renderTabs(D) +
       "<p class='sub'>" +
       filterNote +
@@ -732,8 +1139,12 @@ th{color:#888;font-weight:600}
     var q = activeServer
       ? "/api/stats/load?server=" + encodeURIComponent(activeServer)
       : "/api/stats/load";
-    fetch(q, { cache: "no-store" })
+    fetch(q, { cache: "no-store", credentials: "same-origin" })
       .then(function (r) {
+        if (r.status === 401) {
+          showLogin();
+          throw new Error("auth");
+        }
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
@@ -823,13 +1234,17 @@ th{color:#888;font-weight:600}
     if (loadTimer) clearInterval(loadTimer);
     destroyAllCharts();
     app.innerHTML = "<p class='sub'>Загрузка…</p>";
-    fetch(q, { cache: "no-store" })
-      .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
+    ensureMaps()
+      .catch(function () {})
+      .then(function () {
+        return api(q);
       })
       .then(render)
       .catch(function (e) {
+        if (e && e.auth) {
+          showLogin();
+          return;
+        }
         app.innerHTML =
           "<p class='err'>Не удалось загрузить статистику: " +
           esc(e.message) +

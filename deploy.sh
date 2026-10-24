@@ -97,6 +97,12 @@ chmod 644 /etc/caddy/Caddyfile
 # Keep a copy named by domain for reference / multi-site later.
 cp -f /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.${SITE_DOMAIN}"
 
+if ! python3 -c "import PIL.Image" >/dev/null 2>&1; then
+  echo "==> install python3-pil (Tab scoreboard Steam avatars)"
+  apt-get update -y
+  apt-get install -y --no-install-recommends python3-pil
+fi
+
 echo "==> stats API (secret /statistics/)"
 install -m 644 "${SCRIPT_DIR}/systemd/kfm-stats.service" /etc/systemd/system/kfm-stats.service
 systemctl daemon-reload

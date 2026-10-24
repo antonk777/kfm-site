@@ -5,6 +5,8 @@ Uses the same MariaDB as perkhost (kfmaniacs). Tables:
   site_map_sessions      — one row per map play
   site_session_players   — players linked to a map session
   site_daily_snapshot    — peak/unique by day
+  site_player_map_clear_events — one row per full clear (wave 1 → boss)
+  site_player_map_clears — per-player per-map clear counts
 
 Listens on 127.0.0.1:STATS_PORT (default 8765) for both HTTP and UDP.
 Caddy reverse-proxies /statistics* and /api/stats*. Game sends UDP form bodies
@@ -18,35 +20,47 @@ Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import io
 import json
 import os
 import re
+import secrets
 import socket
+import subprocess
+import tempfile
 import threading
 import time
+import urllib.request
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote_plus, urlparse
+from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 HOST = os.environ.get("STATS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STATS_PORT", "8765"))
 DAYS = max(30, int(os.environ.get("STATS_DAYS", "180")))
 HTML_PATH = Path(__file__).with_name("statistics.html")
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 DOWNLOAD_PATH_RE = re.compile(r"^/(download|KFM-Companion[^/]*\.exe)$", re.I)
-# Difficulty slots from start.sh — always shown as tabs even with zero rows yet.
-KNOWN_SERVERS = ("normal", "hard", "suicidal", "hoe")
+# Difficulty slots that still accept stats. Hard and Suicidal stay here so
+# «Все» keeps their history, but they are not shown or restarted from the panel.
+KNOWN_SERVERS = ("normal", "hard", "suicidal", "vote")
+PANEL_SERVERS = ("normal", "vote")
 # Legacy short name from before per-slot StatsServerName — drop from UI and aggregates.
 IGNORED_SERVERS = frozenset({"beta"})
+# Retired HoE slot name → Difficulty Vote (same port 7737).
+SERVER_ALIASES = {"hoe": "vote"}
 # Game UDP + query UDP (game+1) per slot — used for per-process net counters.
 SLOT_PORTS: dict[str, tuple[int, int]] = {
-    "normal": (7707, 7708),
-    "hard": (7717, 7718),
+    "normal": (7717, 7718),
+    # Hard is offline. 7717 is the Normal server. Keep the name for old rows.
+    "hard": (0, 0),
     "suicidal": (7727, 7728),
-    "hoe": (7737, 7738),
+    "vote": (7737, 7738),
 }
 PID_DIR = Path(os.environ.get("KFM_PID_DIR", "/home/kfserver/run"))
 _DOWNLOAD_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -152,6 +166,8 @@ def _ensure_port_accounting() -> bool:
             _iptables("-F", chain)
         for _slot, ports in SLOT_PORTS.items():
             for port in ports:
+                if port <= 0:
+                    continue
                 _iptables(
                     "-A", "KFM_ACCT_IN", "-p", "udp", "--dport", str(port), "-j", "RETURN"
                 )
@@ -218,9 +234,7 @@ def _slot_net_bytes() -> dict[str, int]:
     return result
 
 
-def _resolve_slot_pid(slot: str) -> int | None:
-    """PID from run/<slot>.pid, verified alive and matching -port=."""
-    path = PID_DIR / f"{slot}.pid"
+def _pid_from_file(path: Path, slot: str) -> int | None:
     try:
         pid = int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -242,6 +256,17 @@ def _resolve_slot_pid(slot: str) -> int | None:
         if "ucc-bin" not in cmdline:
             return None
     return pid
+
+
+def _resolve_slot_pid(slot: str) -> int | None:
+    """PID from run/<slot>.pid, verified alive and matching -port=."""
+    pid = _pid_from_file(PID_DIR / f"{slot}.pid", slot)
+    if pid is not None:
+        return pid
+    # Difficulty Vote used to be the HoE slot (same port).
+    if slot == "vote":
+        return _pid_from_file(PID_DIR / "hoe.pid", slot)
+    return None
 
 
 def _read_pid_cpu_jiffies(pid: int) -> int | None:
@@ -497,12 +522,15 @@ def _parse_live_players(raw: str) -> list[dict[str, Any]]:
     return out
 
 
-def ingest_live(_con, p: dict[str, Any]) -> None:
-    server = str(p.get("server") or p.get("server_name") or "").strip().lower()[:64]
-    if not server or server in IGNORED_SERVERS:
+def ingest_live(con, p: dict[str, Any]) -> None:
+    server = canon_server_name(p.get("server") or p.get("server_name"))
+    if not server:
         return
     players = _parse_live_players(str(p.get("players") or ""))
-    online = int(num(p.get("online"), len(players)))
+    admins = admin_steam_set(con, [str(pl.get("steam") or "") for pl in players])
+    if admins:
+        players = [pl for pl in players if str(pl.get("steam") or "") not in admins]
+    online = len(players)
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
     tick_ms = int(num(p.get("worstTick"), -1))
     ts = now_ts()
@@ -563,13 +591,14 @@ def _live_from_db(con, server: str) -> dict[str, Any] | None:
             "steam": str(r["steam"] or "")[:64],
         }
         for r in cur.fetchall()
+        if not is_admin_steam(con, str(r["steam"] or ""))
     ]
     return {
         "server": server,
         "map": str(row["map_name"] or "")[:64],
         "wave": int(row["wave"] or 0),
         "finalWave": int(row["final_wave"] or 0),
-        "online": max(int(row["player_count"] or 0), len(players)),
+        "online": len(players),
         "players": players,
         "worstTick": -1,
         "ts": int(row["started_at"] or 0),
@@ -641,6 +670,7 @@ def _attach_health(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_live_status(server: str) -> dict[str, Any]:
+    server = SERVER_ALIASES.get(server, server)
     empty = {
         "server": server,
         "map": "",
@@ -658,6 +688,11 @@ def get_live_status(server: str) -> dict[str, Any]:
     with _LIVE_LOCK:
         snap = dict(_LIVE.get(server) or {})
         ticks = list(_TICK_SAMPLES.get(server) or [])
+        # Pre-rename live pushes still arrive as hoe.
+        if not snap and server == "vote":
+            snap = dict(_LIVE.get("hoe") or {})
+        if not ticks and server == "vote":
+            ticks = list(_TICK_SAMPLES.get("hoe") or [])
     peak = _peak_tick_from_samples(ticks)
     if snap:
         age = now_ts() - int(snap.get("ts") or 0)
@@ -671,6 +706,7 @@ def get_live_status(server: str) -> dict[str, Any]:
     if con is not None:
         try:
             with LOCK:
+                ensure_db(con)
                 db = _live_from_db(con, server)
             if db:
                 db["stale"] = True
@@ -711,6 +747,19 @@ def connect():
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+def ensure_db(con) -> None:
+    """Reopen a MariaDB socket that the server already closed.
+
+    One connection is shared by the HTTP and UDP threads. After wait_timeout,
+    or after two threads touched it at once, pymysql drops the socket and every
+    later query raises InterfaceError (0, ''). Caller must hold LOCK.
+    """
+    try:
+        con.ping(reconnect=True)
+    except Exception:
+        con.connect()
 
 
 def init_schema(con) -> None:
@@ -772,6 +821,45 @@ def init_schema(con) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS `site_player_map_clear_events` (
+          `id` BIGINT NOT NULL AUTO_INCREMENT,
+          `steam_id` VARCHAR(64) NOT NULL,
+          `map_name` VARCHAR(64) NOT NULL,
+          `difficulty` DOUBLE NOT NULL DEFAULT 0,
+          `session_key` VARCHAR(128) NOT NULL DEFAULT '',
+          `server_name` VARCHAR(64) NOT NULL DEFAULT '',
+          `cleared_at` INT NOT NULL,
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `uk_site_clear_event` (`session_key`, `steam_id`),
+          KEY `idx_site_clear_ev_steam` (`steam_id`),
+          KEY `idx_site_clear_ev_map` (`map_name`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS `site_player_map_clears` (
+          `steam_id` VARCHAR(64) NOT NULL,
+          `map_name` VARCHAR(64) NOT NULL,
+          `clear_count` INT NOT NULL DEFAULT 0,
+          `last_cleared_at` INT NOT NULL DEFAULT 0,
+          PRIMARY KEY (`steam_id`, `map_name`),
+          KEY `idx_site_clears_map` (`map_name`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    # Migrate join_wave onto session players (from-start clears).
+    cur.execute("SHOW COLUMNS FROM `site_session_players` LIKE 'join_wave'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            ALTER TABLE `site_session_players`
+              ADD COLUMN `join_wave` INT NOT NULL DEFAULT 0 AFTER `max_wave`
+            """
+        )
+        print("kfm-stats: migrated site_session_players +join_wave", flush=True)
     # Migrate pre-per-server snapshot table (PK was day only).
     cur.execute("SHOW COLUMNS FROM `site_daily_snapshot` LIKE 'server_name'")
     if not cur.fetchone():
@@ -786,17 +874,19 @@ def init_schema(con) -> None:
             "ALTER TABLE `site_daily_snapshot` ADD PRIMARY KEY (`day`, `server_name`)"
         )
         print("kfm-stats: migrated site_daily_snapshot +server_name", flush=True)
-    # Drop lobby shells that never got a human player.
+    # Lobby shells with no player row at all. Admin-only rows stay so the
+    # day is "session tracked" and a nameless snapshot cannot fill «Все».
     cur.execute(
         """
-        DELETE sp FROM `site_session_players` sp
-        INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-        WHERE ms.`player_count`<=0
+        DELETE ms FROM `site_map_sessions` ms
+        LEFT JOIN `site_session_players` sp ON sp.`session_id`=ms.`id`
+        WHERE ms.`player_count`<=0 AND sp.`id` IS NULL
         """
     )
-    cur.execute("DELETE FROM `site_map_sessions` WHERE `player_count`<=0")
     if cur.rowcount:
         print(f"kfm-stats: purged {cur.rowcount} empty map sessions", flush=True)
+    repair_blank_server_names(con)
+    refresh_all_player_counts(con)
 
 
 def now_ts() -> int:
@@ -827,6 +917,147 @@ def num(v: Any, default: float | int = 0) -> float | int:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def canon_server_name(raw: Any) -> str:
+    """Known difficulty slot, or empty when the name must not be stored."""
+    s = str(raw or "").strip().lower()[:64]
+    s = SERVER_ALIASES.get(s, s)
+    if s in KNOWN_SERVERS:
+        return s
+    return ""
+
+
+def server_from_payload(p: dict[str, Any]) -> str:
+    """Slot name from the packet, or from the session key prefix (slot:map:unix)."""
+    named = canon_server_name(p.get("server") or p.get("server_name"))
+    if named:
+        return named
+    key = str(p.get("key") or p.get("session_key") or "")
+    return canon_server_name(key.split(":", 1)[0])
+
+
+def non_admin_sql(alias: str = "sp") -> str:
+    """DB admins are not players for any public stat."""
+    return (
+        f" AND {alias}.`steam_id` NOT IN ("
+        "SELECT `steam_id` FROM `players` WHERE `admin`<>0 AND `steam_id`<>''"
+        ")"
+    )
+
+
+def is_admin_steam(con, steam: str) -> bool:
+    steam = str(steam or "").strip()
+    if not steam:
+        return False
+    cur = con.cursor()
+    cur.execute(
+        "SELECT `admin` AS a FROM `players` WHERE `steam_id`=%s LIMIT 1",
+        (steam,),
+    )
+    row = cur.fetchone()
+    return bool(row and int(row.get("a") or 0) != 0)
+
+
+def admin_steam_set(con, steams: list[str]) -> set[str]:
+    ids = [s for s in {str(x or "").strip() for x in steams} if s]
+    if not ids:
+        return set()
+    placeholders = ",".join(["%s"] * len(ids))
+    cur = con.cursor()
+    cur.execute(
+        f"SELECT `steam_id` AS id FROM `players` WHERE `admin`<>0 AND `steam_id` IN ({placeholders})",
+        tuple(ids),
+    )
+    return {str(r["id"]) for r in cur.fetchall()}
+
+
+def repair_blank_server_names(con) -> None:
+    """Blank or beta rows whose session key starts with a live slot belong on that slot.
+
+    The key is slot:map:unix. Those rows used to be invisible on every server tab
+    and only affected «Все» through a nameless daily snapshot.
+    """
+    cur = con.cursor()
+    for slot in KNOWN_SERVERS:
+        prefix = slot + ":%"
+        cur.execute(
+            """
+            UPDATE `site_map_sessions`
+            SET `server_name`=%s
+            WHERE `server_name` IN ('', 'beta') AND `session_key` LIKE %s
+            """,
+            (slot, prefix),
+        )
+        n = int(cur.rowcount or 0)
+        cur.execute(
+            """
+            UPDATE `site_player_map_clear_events`
+            SET `server_name`=%s
+            WHERE `server_name` IN ('', 'beta') AND `session_key` LIKE %s
+            """,
+            (slot, prefix),
+        )
+        n += int(cur.rowcount or 0)
+        if n:
+            print(f"kfm-stats: repaired {n} {slot} rows from session key", flush=True)
+
+
+def refresh_all_player_counts(con) -> None:
+    """player_count is non-admin humans only. Admin rows stay so the day is tracked."""
+    con.cursor().execute(
+        f"""
+        UPDATE `site_map_sessions` ms
+        SET `player_count`=(
+          SELECT COUNT(*) FROM `site_session_players` sp
+          WHERE sp.`session_id`=ms.`id`{non_admin_sql("sp")}
+        )
+        """
+    )
+
+
+def _player_count_sql() -> str:
+    return (
+        "(SELECT COUNT(*) FROM `site_session_players` sp "
+        f"WHERE sp.`session_id`=%s{non_admin_sql('sp')})"
+    )
+
+
+def resolve_unique(
+    player_rows: int,
+    distinct: int,
+    map_sessions: int,
+    snap: int,
+) -> int:
+    """Unique players for one day.
+
+    When player rows exist, `distinct` is the number (admins already removed).
+    A day with map sessions and no non-admin players is zero. Snapshot numbers
+    are only for days before session rows existed, and only for that same server.
+    """
+    if player_rows > 0:
+        return distinct
+    if map_sessions > 0:
+        return 0
+    if snap > 0:
+        return snap
+    return 0
+
+
+def resolve_peak(
+    player_rows: int,
+    session_peak: int,
+    map_sessions: int,
+    snap: int,
+) -> int:
+    """Same rule as resolve_unique, for the peak column."""
+    if player_rows > 0:
+        return session_peak
+    if map_sessions > 0:
+        return 0
+    if snap > 0:
+        return snap
+    return 0
 
 
 def parse_body(raw: bytes, ctype: str) -> dict[str, Any]:
@@ -877,7 +1108,7 @@ def ensure_map_session(con, p: dict[str, Any]) -> int:
     started = int(num(p.get("started_at"), now_ts()))
     day = int(num(p.get("day"), day_from_ts(started)))
     difficulty = float(num(p.get("diff"), num(p.get("difficulty"), 0.0)))
-    server_name = str(p.get("server") or p.get("server_name") or "")[:64]
+    server_name = server_from_payload(p)
     cur = con.cursor()
     cur.execute(
         """
@@ -917,8 +1148,9 @@ def ingest_map_close(con, p: dict[str, Any]) -> None:
     with LOCK:
         sid = ensure_map_session(con, p)
         cur = con.cursor()
+        count_sql = _player_count_sql()
         cur.execute(
-            """
+            f"""
             UPDATE `site_map_sessions` SET
               `ended_at`=GREATEST(`ended_at`, %s),
               `duration_sec`=GREATEST(`duration_sec`, %s),
@@ -927,9 +1159,7 @@ def ingest_map_close(con, p: dict[str, Any]) -> None:
               `final_wave`=GREATEST(`final_wave`, %s),
               `difficulty`=IF(%s=0, `difficulty`, %s),
               `day`=%s,
-              `player_count`=(
-                SELECT COUNT(*) FROM `site_session_players` WHERE `session_id`=%s
-              )
+              `player_count`={count_sql}
             WHERE `id`=%s
             """,
             (ended, duration, outcome, wave, final_wave, difficulty, difficulty, day, sid, sid),
@@ -938,10 +1168,14 @@ def ingest_map_close(con, p: dict[str, Any]) -> None:
             "SELECT `player_count` AS c FROM `site_map_sessions` WHERE `id`=%s", (sid,)
         )
         row = cur.fetchone()
-        # Lobby / bots-only shells: drop so they never enter charts.
+        # Drop a shell with no player row. Admin rows stay (they are not counted).
         if row is not None and int(row["c"] or 0) <= 0:
-            cur.execute("DELETE FROM `site_session_players` WHERE `session_id`=%s", (sid,))
-            cur.execute("DELETE FROM `site_map_sessions` WHERE `id`=%s", (sid,))
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM `site_session_players` WHERE `session_id`=%s",
+                (sid,),
+            )
+            if int(cur.fetchone()["n"] or 0) == 0:
+                cur.execute("DELETE FROM `site_map_sessions` WHERE `id`=%s", (sid,))
 
 
 def ingest_player_join(con, p: dict[str, Any]) -> None:
@@ -953,32 +1187,83 @@ def ingest_player_join(con, p: dict[str, Any]) -> None:
     joined = int(num(p.get("joined_at"), now_ts()))
     perk_index = int(num(p.get("perkIdx"), num(p.get("perk_index"), -1)))
     perk_name = str(p.get("perk") or p.get("perk_name") or "")[:32]
+    join_wave = int(num(p.get("joinWave"), num(p.get("join_wave"), 0)))
     with LOCK:
+        if is_admin_steam(con, steam):
+            return
         sid = ensure_map_session(con, p)
         touch_player(con, steam, name)
         con.cursor().execute(
             """
             INSERT INTO `site_session_players`(
               `session_id`, `session_key`, `steam_id`, `name`, `joined_at`,
-              `perk_index`, `perk_name`, `outcome`
-            ) VALUES(%s,%s,%s,%s,%s,%s,%s,'joined')
+              `perk_index`, `perk_name`, `join_wave`, `outcome`
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'joined')
             ON DUPLICATE KEY UPDATE
               `name`=IF(VALUES(`name`)='', `name`, VALUES(`name`)),
               `joined_at`=LEAST(IF(`joined_at`=0, VALUES(`joined_at`), `joined_at`), VALUES(`joined_at`)),
               `perk_index`=IF(VALUES(`perk_name`)='', `perk_index`, VALUES(`perk_index`)),
               `perk_name`=IF(VALUES(`perk_name`)='', `perk_name`, VALUES(`perk_name`)),
+              `join_wave`=IF(`join_wave`=0, VALUES(`join_wave`), LEAST(`join_wave`, VALUES(`join_wave`))),
               `outcome`=IF(`outcome` IN ('leave','win','loss'), `outcome`, 'joined')
             """,
-            (sid, key, steam, name, joined, perk_index, perk_name),
+            (sid, key, steam, name, joined, perk_index, perk_name, join_wave),
         )
         con.cursor().execute(
-            """
-            UPDATE `site_map_sessions` SET `player_count`=(
-              SELECT COUNT(*) FROM `site_session_players` WHERE `session_id`=%s
-            ) WHERE `id`=%s
+            f"""
+            UPDATE `site_map_sessions` SET `player_count`={_player_count_sql()}
+            WHERE `id`=%s
             """,
             (sid, sid),
         )
+
+
+def normalize_map_name(name: str) -> str:
+    m = str(name or "").strip()
+    if "." in m:
+        m = m.split(".", 1)[0]
+    return m[:64]
+
+
+def ingest_map_clear(con, p: dict[str, Any]) -> None:
+    """Credit one full clear (wave 1 → boss) for a player on a map."""
+    steam = str(p.get("steam") or p.get("steam_id") or "").strip()
+    map_name = normalize_map_name(p.get("map") or p.get("map_name") or "")
+    if not steam or not map_name:
+        raise ValueError("steam and map required")
+    key = str(p.get("key") or p.get("session_key") or "").strip()
+    name = str(p.get("name") or p.get("player") or "")[:64]
+    cleared = int(num(p.get("cleared_at"), now_ts()))
+    difficulty = float(num(p.get("diff"), num(p.get("difficulty"), 0.0)))
+    server_name = server_from_payload(p)
+    with LOCK:
+        if is_admin_steam(con, steam):
+            return
+        touch_player(con, steam, name)
+        cur = con.cursor()
+        cur.execute(
+            """
+            INSERT INTO `site_player_map_clear_events`(
+              `steam_id`, `map_name`, `difficulty`, `session_key`, `server_name`, `cleared_at`
+            ) VALUES(%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              `cleared_at`=LEAST(`cleared_at`, VALUES(`cleared_at`))
+            """,
+            (steam, map_name, difficulty, key, server_name, cleared),
+        )
+        # Only bump the aggregate when this session+player event is new.
+        if cur.rowcount == 1:
+            cur.execute(
+                """
+                INSERT INTO `site_player_map_clears`(
+                  `steam_id`, `map_name`, `clear_count`, `last_cleared_at`
+                ) VALUES(%s,%s,1,%s)
+                ON DUPLICATE KEY UPDATE
+                  `clear_count`=`clear_count`+1,
+                  `last_cleared_at`=GREATEST(`last_cleared_at`, VALUES(`last_cleared_at`))
+                """,
+                (steam, map_name, cleared),
+            )
 
 
 def ingest_player_leave(con, p: dict[str, Any]) -> None:
@@ -995,6 +1280,8 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
     outcome = str(p.get("outcome") or "leave").lower()[:16]
     wave = int(num(p.get("wave"), 0))
     with LOCK:
+        if is_admin_steam(con, steam):
+            return
         sid = ensure_map_session(con, p)
         touch_player(con, steam, name)
         con.cursor().execute(
@@ -1028,10 +1315,9 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
             ),
         )
         con.cursor().execute(
-            """
-            UPDATE `site_map_sessions` SET `player_count`=(
-              SELECT COUNT(*) FROM `site_session_players` WHERE `session_id`=%s
-            ) WHERE `id`=%s
+            f"""
+            UPDATE `site_map_sessions` SET `player_count`={_player_count_sql()}
+            WHERE `id`=%s
             """,
             (sid, sid),
         )
@@ -1041,27 +1327,30 @@ def ingest_daily(con, p: dict[str, Any]) -> None:
     day = int(num(p.get("day"), 0))
     if day <= 0:
         raise ValueError("day required")
-    server_name = str(p.get("server") or p.get("server_name") or "")[:64]
-    if server_name.lower() in IGNORED_SERVERS:
-        server_name = ""
+    # Unknown / beta used to be stored as server_name='' and showed up only on «Все».
+    server_name = server_from_payload(p)
+    if not server_name:
+        print(
+            f"kfm-stats: ignore daily snapshot server={p.get('server')!r}",
+            flush=True,
+        )
+        return
     with LOCK:
+        rows, distinct, maps, sess_peak = session_activity(con, day, server_name)
+        shown = resolve_unique(rows, distinct, maps, 0)
+        peak_in = int(num(p.get("peak"), 0))
+        peak_store = 0 if shown <= 0 else max(peak_in, sess_peak)
         con.cursor().execute(
             """
             INSERT INTO `site_daily_snapshot`
               (`day`, `server_name`, `peak`, `unique_count`, `updated_at`)
             VALUES(%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
-              `peak`=GREATEST(`peak`, VALUES(`peak`)),
-              `unique_count`=GREATEST(`unique_count`, VALUES(`unique_count`)),
+              `peak`=IF(VALUES(`unique_count`)=0, 0, GREATEST(`peak`, VALUES(`peak`))),
+              `unique_count`=VALUES(`unique_count`),
               `updated_at`=VALUES(`updated_at`)
             """,
-            (
-                day,
-                server_name,
-                int(num(p.get("peak"), 0)),
-                int(num(p.get("unique"), num(p.get("unique_count"), 0))),
-                now_ts(),
-            ),
+            (day, server_name, peak_store, shown, now_ts()),
         )
 
 
@@ -1165,15 +1454,27 @@ def normalize_server(raw: str | None) -> str | None:
     s = str(raw).strip().lower()
     if not s or s in ("all", "все", "*", "any") or s in IGNORED_SERVERS:
         return None
-    return s[:64]
+    return SERVER_ALIASES.get(s, s)[:64]
+
+
+def server_name_variants(server: str) -> tuple[str, ...]:
+    """DB may still store the retired HoE name for the vote slot."""
+    if server == "vote":
+        return ("vote", "hoe")
+    return (server,)
 
 
 def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tuple[Any, ...]]:
     if server:
-        return f" AND {col}=%s", (server,)
-    # «Все»: only live difficulty slots — exclude legacy beta / empty / unknown.
-    placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
-    return f" AND {col} IN ({placeholders})", tuple(KNOWN_SERVERS)
+        names = server_name_variants(server)
+        if len(names) == 1:
+            return f" AND {col}=%s", names
+        placeholders = ",".join(["%s"] * len(names))
+        return f" AND {col} IN ({placeholders})", names
+    # «Все»: live slots plus the retired HoE name — exclude legacy beta / empty / unknown.
+    names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+    placeholders = ",".join(["%s"] * len(names))
+    return f" AND {col} IN ({placeholders})", tuple(names)
 
 
 def nonempty_session_sql(col: str = "`player_count`") -> str:
@@ -1182,9 +1483,10 @@ def nonempty_session_sql(col: str = "`player_count`") -> str:
 
 
 def list_servers(con) -> list[dict[str, Any]]:
-    """Only the four difficulty slots (no legacy beta)."""
+    """Servers shown in the admin panel. Old HoE rows count under vote."""
     cur = con.cursor()
-    placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
+    names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+    placeholders = ",".join(["%s"] * len(names))
     cur.execute(
         f"""
         SELECT `server_name` AS name, COUNT(*) AS c
@@ -1192,10 +1494,16 @@ def list_servers(con) -> list[dict[str, Any]]:
         WHERE `server_name` IN ({placeholders}){nonempty_session_sql()}
         GROUP BY `server_name`
         """,
-        tuple(KNOWN_SERVERS),
+        names,
     )
     counts = {str(r["name"]): int(r["c"]) for r in cur.fetchall()}
-    return [{"name": name, "c": int(counts.get(name, 0))} for name in KNOWN_SERVERS]
+    out = []
+    for name in PANEL_SERVERS:
+        c = int(counts.get(name, 0))
+        if name == "vote":
+            c += int(counts.get("hoe", 0))
+        out.append({"name": name, "c": c})
+    return out
 
 
 def day_list(
@@ -1207,6 +1515,8 @@ def day_list(
     cur = con.cursor()
     srv_sql, srv_args = server_sql(server)
     if server:
+        snap_names = server_name_variants(server)
+        snap_ph = ",".join(["%s"] * len(snap_names))
         cur.execute(
             f"""
             SELECT DISTINCT `day` FROM (
@@ -1214,13 +1524,14 @@ def day_list(
               WHERE `day` >= %s{srv_sql}{nonempty_session_sql()}
               UNION
               SELECT `day` FROM `site_daily_snapshot`
-              WHERE `day` >= %s AND `server_name`=%s
+              WHERE `day` >= %s AND `server_name` IN ({snap_ph})
             ) t ORDER BY `day`
             """,
-            (min_day, *srv_args, min_day, server),
+            (min_day, *srv_args, min_day, *snap_names),
         )
     else:
-        placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
+        names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+        placeholders = ",".join(["%s"] * len(names))
         cur.execute(
             f"""
             SELECT DISTINCT `day` FROM (
@@ -1233,7 +1544,7 @@ def day_list(
               )
             ) t ORDER BY `day`
             """,
-            (min_day, *srv_args, min_day, *KNOWN_SERVERS),
+            (min_day, *srv_args, min_day, *names),
         )
     days = {int(r["day"]) for r in cur.fetchall()}
     if extra_days and not server:
@@ -1248,104 +1559,127 @@ def day_start_ts(yyyymmdd: int) -> int:
     return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
 
 
-def _snap_peak_unique(con, day: int, server: str | None) -> tuple[int, int]:
-    """Peak/unique from site_daily_snapshot for one day (per-server or All)."""
+def _snap_numbers(con, day: int, server: str) -> tuple[int, int]:
     cur = con.cursor()
-    if server:
+    names = server_name_variants(server)
+    if len(names) == 1:
         cur.execute(
             """
             SELECT `peak`, `unique_count` FROM `site_daily_snapshot`
             WHERE `day`=%s AND `server_name`=%s
             """,
-            (day, server),
+            (day, names[0]),
         )
-        row = cur.fetchone()
-        if not row:
-            return 0, 0
-        return int(row["peak"] or 0), int(row["unique_count"] or 0)
-    placeholders = ",".join(["%s"] * len(KNOWN_SERVERS))
+        row = cur.fetchone() or {}
+        return int(row.get("peak") or 0), int(row.get("unique_count") or 0)
+    placeholders = ",".join(["%s"] * len(names))
     cur.execute(
         f"""
-        SELECT COALESCE(SUM(`peak`), 0) AS peak,
-               COALESCE(SUM(`unique_count`), 0) AS uniq
+        SELECT COALESCE(SUM(`peak`),0) AS peak,
+               COALESCE(SUM(`unique_count`),0) AS unique_count
         FROM `site_daily_snapshot`
         WHERE `day`=%s AND `server_name` IN ({placeholders})
         """,
-        (day, *KNOWN_SERVERS),
+        (day, *names),
     )
-    named = cur.fetchone() or {}
-    peak_named = int(named.get("peak") or 0)
-    uniq_named = int(named.get("uniq") or 0)
+    row = cur.fetchone() or {}
+    return int(row.get("peak") or 0), int(row.get("unique_count") or 0)
+
+
+def session_activity(con, day: int, server: str | None) -> tuple[int, int, int, int]:
+    """Return (player_rows, non_admin_distinct, map_sessions, non_admin_peak).
+
+    player_rows counts every attached steam id, including admins, so a day that
+    only an admin visited is still "tracked" and does not fall back to the
+    nameless daily snapshot.
+    """
+    cur = con.cursor()
+    srv_sql, srv_args = server_sql(server, "ms.`server_name`")
+    t0 = day_start_ts(day)
+    t1 = day_start_ts(add_days(day, 1))
     cur.execute(
-        """
-        SELECT `peak`, `unique_count` FROM `site_daily_snapshot`
-        WHERE `day`=%s AND `server_name`=''
+        f"""
+        SELECT COUNT(*) AS rows_n,
+               COUNT(DISTINCT CASE
+                 WHEN sp.`steam_id` NOT IN (
+                   SELECT `steam_id` FROM `players`
+                   WHERE `admin`<>0 AND `steam_id`<>''
+                 ) THEN sp.`steam_id` END) AS uniq
+        FROM `site_session_players` sp
+        INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
+        WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
+               OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
+          {srv_sql}
         """,
-        (day,),
+        (day, t0, t1, t0, t1, *srv_args),
     )
-    legacy = cur.fetchone()
-    if peak_named == 0 and uniq_named == 0 and legacy:
-        return int(legacy["peak"] or 0), int(legacy["unique_count"] or 0)
-    peak_legacy = int(legacy["peak"] or 0) if legacy else 0
-    uniq_legacy = int(legacy["unique_count"] or 0) if legacy else 0
-    return max(peak_named, peak_legacy), max(uniq_named, uniq_legacy)
+    row = cur.fetchone() or {}
+    rows_n = int(row.get("rows_n") or 0)
+    uniq = int(row.get("uniq") or 0)
+    cur.execute(
+        f"""
+        SELECT COALESCE(MAX(pc.n), 0) AS peak
+        FROM (
+          SELECT sp.`session_id` AS sid, COUNT(*) AS n
+          FROM `site_session_players` sp
+          INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
+          WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
+                 OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
+            {srv_sql}
+            AND sp.`steam_id` NOT IN (
+              SELECT `steam_id` FROM `players` WHERE `admin`<>0 AND `steam_id`<>''
+            )
+          GROUP BY sp.`session_id`
+        ) pc
+        """,
+        (day, t0, t1, t0, t1, *srv_args),
+    )
+    peak = int((cur.fetchone() or {}).get("peak") or 0)
+    cur.execute(
+        f"""
+        SELECT COUNT(*) AS n FROM `site_map_sessions` ms
+        WHERE (ms.`day`=%s OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
+          {srv_sql}
+        """,
+        (day, t0, t1, *srv_args),
+    )
+    maps = int((cur.fetchone() or {}).get("n") or 0)
+    return rows_n, uniq, maps, peak
+
+
+def _day_unique(con, day: int, server: str | None) -> int:
+    rows, distinct, maps, _peak = session_activity(con, day, server)
+    if server:
+        _pk, snap = _snap_numbers(con, day, server)
+        return resolve_unique(rows, distinct, maps, snap)
+    named = 0
+    for slot in KNOWN_SERVERS:
+        _pk, snap = _snap_numbers(con, day, slot)
+        named += snap
+    # A blank server_name snapshot is not on any server tab. Ignore it so «Все»
+    # cannot show players that every slot reports as zero.
+    return resolve_unique(rows, distinct, maps, named)
+
+
+def _day_peak(con, day: int, server: str | None) -> int:
+    if server:
+        rows, _distinct, maps, sess_peak = session_activity(con, day, server)
+        snap, _uniq = _snap_numbers(con, day, server)
+        return resolve_peak(rows, sess_peak, maps, snap)
+    total = 0
+    for slot in KNOWN_SERVERS:
+        rows, _distinct, maps, sess_peak = session_activity(con, day, slot)
+        snap, _uniq = _snap_numbers(con, day, slot)
+        total += resolve_peak(rows, sess_peak, maps, snap)
+    return total
 
 
 def unique_by_day(con, days: list[int], server: str | None = None) -> list[int]:
-    out = []
-    cur = con.cursor()
-    srv_sql, srv_args = server_sql(server, "ms.`server_name`")
-    for d in days:
-        t0 = day_start_ts(d)
-        t1 = day_start_ts(add_days(d, 1))
-        # day column + wall-clock joins (overnight maps keep yesterday's day).
-        cur.execute(
-            f"""
-            SELECT COUNT(DISTINCT sp.`steam_id`) AS c
-            FROM `site_session_players` sp
-            INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
-                   OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
-              {srv_sql}
-            """,
-            (d, t0, t1, t0, t1, *srv_args),
-        )
-        from_sess = int(cur.fetchone()["c"] or 0)
-        _, snap_uniq = _snap_peak_unique(con, d, server)
-        out.append(max(from_sess, snap_uniq))
-    return out
+    return [_day_unique(con, d, server) for d in days]
 
 
 def peak_by_day(con, days: list[int], server: str | None = None) -> list[int]:
-    out = []
-    cur = con.cursor()
-    srv_sql, srv_args = server_sql(server, "ms.`server_name`")
-    for d in days:
-        snap_peak, _ = _snap_peak_unique(con, d, server)
-        t0 = day_start_ts(d)
-        t1 = day_start_ts(add_days(d, 1))
-        # Sessions that overlap this calendar day (incl. still open, started recently).
-        cur.execute(
-            f"""
-            SELECT COALESCE(MAX(`player_count`), 0) AS peak
-            FROM `site_map_sessions` ms
-            WHERE (
-                ms.`day`=%s
-                OR (
-                  ms.`started_at` >= %s AND ms.`started_at` < %s
-                  AND (ms.`ended_at`=0 OR ms.`ended_at` >= %s)
-                )
-              )
-              {srv_sql}{nonempty_session_sql("ms.`player_count`")}
-            """,
-            (d, t0 - 86400, t1, t0, *srv_args),
-        )
-        sess_peak = int(cur.fetchone()["peak"] or 0)
-        if server:
-            out.append(max(snap_peak, sess_peak))
-        else:
-            out.append(max(snap_peak, sess_peak) if snap_peak == 0 else snap_peak)
-    return out
+    return [_day_peak(con, d, server) for d in days]
 
 
 def players_on_day(con, day: int, server: str | None = None) -> set[str]:
@@ -1356,7 +1690,7 @@ def players_on_day(con, day: int, server: str | None = None) -> set[str]:
         SELECT DISTINCT sp.`steam_id`
         FROM `site_session_players` sp
         INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-        WHERE ms.`day`=%s{srv_sql}
+        WHERE ms.`day`=%s{srv_sql}{non_admin_sql("sp")}
         """,
         (day, *srv_args),
     )
@@ -1395,7 +1729,7 @@ def avg_playtime_by_day(con, days: list[int], server: str | None = None) -> list
             SELECT sp.`steam_id`, SUM(sp.`duration_sec`) AS total
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE ms.`day`=%s{srv_sql}
+            WHERE ms.`day`=%s{srv_sql}{non_admin_sql("sp")}
             GROUP BY sp.`steam_id`
             """,
             (d, *srv_args),
@@ -1415,6 +1749,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
     dl = parse_download_stats(min_day)
     srv_sql, srv_args = server_sql(server)
     with LOCK:
+        ensure_db(con)
         days = day_list(con, min_day, list(dl["by_day"].keys()), server)
         unique = unique_by_day(con, days, server)
         peak = peak_by_day(con, days, server)
@@ -1434,7 +1769,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT COUNT(DISTINCT sp.`steam_id`) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE 1=1{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}
+            WHERE 1=1{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
             """,
             ms_srv_args,
         )
@@ -1444,7 +1779,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT sp.`perk_name` AS name, COUNT(*) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE sp.`perk_name` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}
+            WHERE sp.`perk_name` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
             GROUP BY sp.`perk_name`
             ORDER BY c DESC LIMIT 12
             """,
@@ -1492,14 +1827,14 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         "normal": "Normal",
         "hard": "Hard",
         "suicidal": "Suicidal",
-        "hoe": "HoE",
+        "vote": "Difficulty Vote",
     }
     return {
         "server": server or "",
         "serverTabs": [{"name": "", "label": "Все"}]
         + [
             {"name": s, "label": SERVER_TAB_LABELS.get(s, s)}
-            for s in KNOWN_SERVERS
+            for s in PANEL_SERVERS
         ],
         "days": days,
         "peak": peak,
@@ -1562,6 +1897,12 @@ def migrate_sqlite_if_any(con) -> None:
 
 def ingest_payload(con, body: dict[str, Any]) -> str:
     """Apply one ingest body. Returns type label for logs."""
+    with LOCK:
+        ensure_db(con)
+        return _ingest_payload(con, body)
+
+
+def _ingest_payload(con, body: dict[str, Any]) -> str:
     typ = str(body.get("type") or "").lower()
     if typ in ("daily", "snapshot"):
         ingest_daily(con, body)
@@ -1578,6 +1919,9 @@ def ingest_payload(con, body: dict[str, Any]) -> str:
     if typ in ("player_leave", "leave", "player"):
         ingest_player_leave(con, body)
         return "player_leave"
+    if typ in ("map_clear", "clear"):
+        ingest_map_clear(con, body)
+        return "map_clear"
     if typ == "live":
         ingest_live(con, body)
         return "live"
@@ -1587,14 +1931,533 @@ def ingest_payload(con, body: dict[str, Any]) -> str:
     raise ValueError(f"unknown type: {typ}")
 
 
+# --- Admin auth + controls (password-gated /statistics) ---------------------
+
+KF_HOME = Path("/home/kfserver")
+KF_LOGS = KF_HOME / "logs"
+KF_MAPS = KF_HOME / "killingfloor" / "Maps"
+KF_START = str(KF_HOME / "start.sh")
+KF_STOP = str(KF_HOME / "stop.sh")
+KF_RESTART = str(KF_HOME / "restart.sh")
+ADMIN_COOKIE = "kfm_stats_auth"
+ADMIN_TTL_SEC = 60 * 60 * 24 * 14  # 14 days
+_ADMIN_LOCK = threading.Lock()
+_ADMIN_BUSY: dict[str, Any] = {"op": None, "started": 0}
+
+
+def admin_password() -> str:
+    return (os.environ.get("STATS_ADMIN_PASSWORD") or "").strip()
+
+
+def admin_secret() -> bytes:
+    raw = (os.environ.get("STATS_ADMIN_SECRET") or "").strip()
+    if raw:
+        return raw.encode("utf-8")
+    pw = admin_password()
+    if not pw:
+        return b""
+    return hashlib.sha256(("kfm-stats|" + pw).encode("utf-8")).digest()
+
+
+def admin_configured() -> bool:
+    return bool(admin_password() and admin_secret())
+
+
+def _make_auth_token(now: int | None = None) -> str:
+    exp = int(now if now is not None else time.time()) + ADMIN_TTL_SEC
+    sig = hmac.new(admin_secret(), str(exp).encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _auth_token_ok(token: str | None) -> bool:
+    if not token or not admin_configured():
+        return False
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return False
+    exp_s, sig = parts
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    if exp < int(time.time()):
+        return False
+    expect = hmac.new(admin_secret(), exp_s.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expect, sig)
+
+
+def _parse_cookies(header: str | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not header:
+        return out
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        out[k.strip()] = unquote(v.strip())
+    return out
+
+
+def _run_as_kfserver(
+    argv: list[str],
+    *,
+    env_extra: dict[str, str] | None = None,
+    timeout: float = 180,
+) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["HOME"] = str(KF_HOME)
+    env["USER"] = "kfserver"
+    env["LOGNAME"] = "kfserver"
+    if env_extra:
+        env.update(env_extra)
+    # Prefixed env for sudo: KF_MAP=... sudo -u kfserver ...
+    cmd = ["sudo", "-u", "kfserver", "-H", "--"] + argv
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(KF_HOME),
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "rc": -1,
+            "stdout": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
+            "stderr": "TIMEOUT",
+            "cmd": cmd,
+        }
+    return {
+        "ok": proc.returncode == 0,
+        "rc": proc.returncode,
+        "stdout": (proc.stdout or "")[-4000:],
+        "stderr": (proc.stderr or "")[-4000:],
+        "cmd": cmd,
+    }
+
+
+def _normalize_map_name(raw: str) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise ValueError("map required")
+    # Accept "KF-Foo", "KF-Foo.rom", "Foo"
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError("invalid map name")
+    if not name.lower().endswith(".rom"):
+        name = name + ".rom"
+    base = Path(name).name
+    path = KF_MAPS / base
+    if not path.is_file():
+        raise ValueError(f"map not found: {base}")
+    return base
+
+
+def list_available_maps() -> list[str]:
+    if not KF_MAPS.is_dir():
+        return []
+    skip = {"KF-Menu.rom", "KFintro.rom", "Entry.rom"}
+    out: list[str] = []
+    for p in sorted(KF_MAPS.glob("*.rom")):
+        if p.name in skip:
+            continue
+        out.append(p.stem)  # without .rom for UI
+    return out
+
+
+def tail_log_lines(path: Path, lines: int = 200, max_bytes: int = 512_000) -> str:
+    if not path.is_file():
+        return ""
+    lines = max(1, min(int(lines), 50000))
+    max_bytes = max(4096, min(int(max_bytes), 16_000_000))
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        if size <= max_bytes:
+            data = fh.read()
+        else:
+            fh.seek(size - max_bytes)
+            data = fh.read()
+            # Drop partial first line.
+            nl = data.find(b"\n")
+            if nl >= 0:
+                data = data[nl + 1 :]
+    text = data.decode("utf-8", errors="replace")
+    parts = text.splitlines()
+    if len(parts) > lines:
+        parts = parts[-lines:]
+    return "\n".join(parts)
+
+
+# Clipboard-friendly full log ceiling; bigger files must be downloaded.
+LOG_COPY_MAX_BYTES = 8_000_000
+
+
+def slot_log_path(slot: str) -> Path:
+    path = KF_LOGS / f"{slot}.log"
+    if slot == "vote" and not path.is_file():
+        legacy = KF_LOGS / "hoe.log"
+        if legacy.is_file():
+            return legacy
+    return path
+
+
+def admin_read_log(
+    server: str,
+    lines: int = 200,
+    *,
+    full: bool = False,
+) -> dict[str, Any]:
+    slot = normalize_server(server)
+    if not slot:
+        raise ValueError("server required")
+    path = slot_log_path(slot)
+    if slot == "vote" and not path.is_file():
+        legacy = KF_LOGS / "hoe.log"
+        if legacy.is_file():
+            path = legacy
+    size = path.stat().st_size if path.is_file() else 0
+    mtime = int(path.stat().st_mtime) if path.is_file() else 0
+    if full:
+        if not path.is_file():
+            return {
+                "server": slot,
+                "path": str(path),
+                "text": "",
+                "size": 0,
+                "mtime": 0,
+                "full": True,
+                "truncated": False,
+                "tooLarge": False,
+            }
+        if size > LOG_COPY_MAX_BYTES:
+            return {
+                "server": slot,
+                "path": str(path),
+                "text": "",
+                "size": size,
+                "mtime": mtime,
+                "full": True,
+                "truncated": True,
+                "tooLarge": True,
+                "copyMaxBytes": LOG_COPY_MAX_BYTES,
+            }
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return {
+            "server": slot,
+            "path": str(path),
+            "text": text,
+            "size": size,
+            "mtime": mtime,
+            "full": True,
+            "truncated": False,
+            "tooLarge": False,
+            "lines": text.count("\n") + (1 if text else 0),
+        }
+    return {
+        "server": slot,
+        "path": str(path),
+        "lines": lines,
+        "text": tail_log_lines(path, lines=lines),
+        "size": size,
+        "mtime": mtime,
+        "full": False,
+        "truncated": size > 512_000,
+        "tooLarge": False,
+    }
+
+
+def admin_restart(server: str | None) -> dict[str, Any]:
+    slot = normalize_server(server) if server else None
+    if slot and slot not in PANEL_SERVERS:
+        raise ValueError("server is off")
+    with _ADMIN_LOCK:
+        if _ADMIN_BUSY.get("op"):
+            return {
+                "ok": False,
+                "error": f"busy: {_ADMIN_BUSY['op']}",
+                "started": _ADMIN_BUSY.get("started"),
+            }
+        label = f"restart:{slot or 'all'}"
+        _ADMIN_BUSY["op"] = label
+        _ADMIN_BUSY["started"] = now_ts()
+    try:
+        if not slot:
+            result = _run_as_kfserver([KF_RESTART], timeout=240)
+        else:
+            # Vote replaced hoe on the same port — kill the old name first.
+            if slot == "vote":
+                _run_as_kfserver([KF_STOP, "hoe"], timeout=60)
+            stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
+            start = _run_as_kfserver([KF_START, slot], timeout=120)
+            result = {
+                "ok": stop.get("ok") and start.get("ok"),
+                "stop": stop,
+                "start": start,
+                "server": slot,
+            }
+        result["op"] = label
+        return result
+    finally:
+        with _ADMIN_LOCK:
+            _ADMIN_BUSY["op"] = None
+
+
+def admin_change_map(server: str, map_name: str) -> dict[str, Any]:
+    slot = normalize_server(server)
+    if not slot:
+        raise ValueError("server required")
+    if slot not in PANEL_SERVERS:
+        raise ValueError("server is off")
+    rom = _normalize_map_name(map_name)
+    with _ADMIN_LOCK:
+        if _ADMIN_BUSY.get("op"):
+            return {
+                "ok": False,
+                "error": f"busy: {_ADMIN_BUSY['op']}",
+                "started": _ADMIN_BUSY.get("started"),
+            }
+        label = f"map:{slot}:{rom}"
+        _ADMIN_BUSY["op"] = label
+        _ADMIN_BUSY["started"] = now_ts()
+    try:
+        stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
+        start = _run_as_kfserver(
+            ["env", f"KF_MAP={rom}", KF_START, slot],
+            timeout=120,
+        )
+        return {
+            "ok": bool(stop.get("ok") and start.get("ok")),
+            "server": slot,
+            "map": rom,
+            "stop": stop,
+            "start": start,
+            "op": label,
+        }
+    finally:
+        with _ADMIN_LOCK:
+            _ADMIN_BUSY["op"] = None
+
+
+# Tab scoreboard portraits. The game server (127.0.0.1, no X-Forwarded-For)
+# asks once per joining player. 32x32 RGB332 comes back as 16 hex lines so
+# UnrealScript can replicate each line in its own packet.
+_AVATAR_SIDE = 32
+_AVATAR_PIXELS = _AVATAR_SIDE * _AVATAR_SIDE
+_AVATAR_CHUNK = 128
+_AVATAR_POS_TTL = 24 * 3600
+_AVATAR_NEG_TTL = 10 * 60
+_AVATAR_MISS = object()
+_AVATAR_MEM: dict[str, tuple[float, bytes | None]] = {}
+_AVATAR_LOCK = threading.Lock()
+_PIL_OK: bool | None = None
+_AVATAR_UA = "Mozilla/5.0 (compatible; KFManiacsAvatar/1.0)"
+_STEAM_ID_RE = re.compile(r"^[0-9]{16,20}$")
+
+
+def avatar_pil_ok() -> bool:
+    global _PIL_OK
+    if _PIL_OK is None:
+        try:
+            import PIL.Image  # noqa: F401
+
+            _PIL_OK = True
+        except ImportError:
+            _PIL_OK = False
+            print("kfm-stats avatars: install python3-pil", flush=True)
+    return bool(_PIL_OK)
+
+
+def _avatar_cache_dir() -> Path:
+    raw = os.environ.get("KFM_AVATAR_CACHE", "/var/cache/kfm-avatars")
+    path = Path(raw)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except OSError:
+        path = Path(tempfile.gettempdir()) / "kfm-avatars"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+def _rgb_to_332(rgb: bytes) -> bytes:
+    out = bytearray(_AVATAR_PIXELS)
+    for i in range(_AVATAR_PIXELS):
+        r = rgb[i * 3]
+        g = rgb[i * 3 + 1]
+        b = rgb[i * 3 + 2]
+        rq = min(7, (r * 7 + 3) // 255)
+        gq = min(7, (g * 7 + 3) // 255)
+        bq = min(3, (b * 3 + 1) // 255)
+        out[i] = (rq << 5) | (gq << 2) | bq
+    return bytes(out)
+
+
+def format_avatar_body(rgb332: bytes | None) -> str:
+    if not rgb332 or len(rgb332) != _AVATAR_PIXELS:
+        return "NONE\n"
+    hexed = rgb332.hex()
+    lines = [hexed[i : i + _AVATAR_CHUNK] for i in range(0, len(hexed), _AVATAR_CHUNK)]
+    if len(lines) != 16 or any(len(line) != _AVATAR_CHUNK for line in lines):
+        return "NONE\n"
+    return "\n".join(lines) + "\nEND\n"
+
+
+def _avatar_url(xml: str) -> str:
+    for tag in ("avatarMedium", "avatarFull", "avatarIcon"):
+        match = re.search(
+            rf"<{tag}>\s*(?:<!\[CDATA\[(.*?)\]\]>|([^<]+?))\s*</{tag}>",
+            xml,
+            re.I | re.S,
+        )
+        if not match:
+            continue
+        url = (match.group(1) or match.group(2) or "").strip()
+        host = (urlparse(url).hostname or "").lower()
+        if url.startswith("https://") and (
+            host.endswith("steamstatic.com")
+            or host.endswith("steampowered.com")
+            or host.endswith("steamcommunity.com")
+        ):
+            return url
+    return ""
+
+
+def _http_get(url: str, limit: int) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": _AVATAR_UA})
+    with urllib.request.urlopen(req, timeout=6) as resp:
+        data = resp.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("response too large")
+    return data
+
+
+def _image_to_rgb32(blob: bytes) -> bytes | None:
+    from PIL import Image
+
+    resample = getattr(Image, "LANCZOS", None) or getattr(Image, "ANTIALIAS")
+    image = Image.open(io.BytesIO(blob))
+    image = image.convert("RGB")
+    image = image.resize((_AVATAR_SIDE, _AVATAR_SIDE), resample)
+    raw = image.tobytes() if hasattr(image, "tobytes") else image.tostring()
+    if len(raw) != _AVATAR_PIXELS * 3:
+        return None
+    return raw
+
+
+def _fetch_avatar_332(steam: str) -> bytes | None:
+    try:
+        xml = _http_get(
+            f"https://steamcommunity.com/profiles/{steam}/?xml=1",
+            80_000,
+        ).decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        print(f"avatar profile {steam}: {exc}", flush=True)
+        return None
+    url = _avatar_url(xml)
+    if not url:
+        return None
+    try:
+        rgb = _image_to_rgb32(_http_get(url, 250_000))
+    except Exception as exc:  # noqa: BLE001
+        print(f"avatar image {steam}: {exc}", flush=True)
+        return None
+    if not rgb:
+        return None
+    return _rgb_to_332(rgb)
+
+
+def _avatar_cache_get(steam: str):
+    now = time.time()
+    with _AVATAR_LOCK:
+        hit = _AVATAR_MEM.get(steam)
+        if hit and hit[0] > now:
+            return hit[1]
+    folder = _avatar_cache_dir()
+    fresh = folder / f"{steam}.332"
+    missing = folder / f"{steam}.none"
+    try:
+        if fresh.is_file() and now - fresh.stat().st_mtime < _AVATAR_POS_TTL:
+            data = fresh.read_bytes()
+            if len(data) == _AVATAR_PIXELS:
+                with _AVATAR_LOCK:
+                    _AVATAR_MEM[steam] = (now + _AVATAR_POS_TTL, data)
+                return data
+        if missing.is_file() and now - missing.stat().st_mtime < _AVATAR_NEG_TTL:
+            with _AVATAR_LOCK:
+                _AVATAR_MEM[steam] = (now + _AVATAR_NEG_TTL, None)
+            return None
+    except OSError:
+        pass
+    return _AVATAR_MISS
+
+
+def _avatar_cache_put(steam: str, blob: bytes | None) -> None:
+    ttl = _AVATAR_POS_TTL if blob else _AVATAR_NEG_TTL
+    with _AVATAR_LOCK:
+        _AVATAR_MEM[steam] = (time.time() + ttl, blob)
+    try:
+        folder = _avatar_cache_dir()
+        fresh = folder / f"{steam}.332"
+        missing = folder / f"{steam}.none"
+        if blob:
+            fresh.write_bytes(blob)
+            if missing.exists():
+                missing.unlink()
+        else:
+            missing.write_bytes(b"")
+            if fresh.exists():
+                fresh.unlink()
+    except OSError as exc:
+        print(f"avatar cache: {exc}", flush=True)
+
+
+def avatar_rgb332(steam: str) -> bytes | None:
+    if not _STEAM_ID_RE.fullmatch(steam or ""):
+        return None
+    if not avatar_pil_ok():
+        return None
+    cached = _avatar_cache_get(steam)
+    if cached is not _AVATAR_MISS:
+        return cached
+    blob = _fetch_avatar_332(steam)
+    _avatar_cache_put(steam, blob)
+    return blob
+
+
+def avatar_text(steam: str) -> str:
+    return format_avatar_body(avatar_rgb332(steam))
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "KFMStats/1.2"
+    server_version = "KFMStats/1.3"
     con = None  # set in main
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[%s] %s" % (self.log_date_time_string(), fmt % args), flush=True)
 
-    def _send(self, code: int, body: Any, ctype: str = "application/json; charset=utf-8") -> None:
+    def _is_authed(self) -> bool:
+        cookies = _parse_cookies(self.headers.get("Cookie"))
+        return _auth_token_ok(cookies.get(ADMIN_COOKIE))
+
+    def _require_auth(self) -> bool:
+        if self._is_authed():
+            return True
+        self._send(401, {"error": "auth required", "auth": True})
+        return False
+
+    def _set_cookie_headers(self, headers: list[tuple[str, str]]) -> None:
+        self._extra_headers = headers
+
+    def _send(
+        self,
+        code: int,
+        body: Any,
+        ctype: str = "application/json; charset=utf-8",
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         if isinstance(body, (dict, list)):
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, str):
@@ -1606,47 +2469,236 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Robots-Tag", "noindex, nofollow")
+        for hk, hv in extra_headers or getattr(self, "_extra_headers", None) or []:
+            self.send_header(hk, hv)
         self.end_headers()
         self.wfile.write(data)
+        self._extra_headers = []
+
+    def _read_json_body(self, max_len: int = 100_000) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > max_len:
+            raise ValueError("body too large")
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid json") from exc
+        if not isinstance(data, dict):
+            raise ValueError("json object required")
+        return data
+
+    def _send_log_download(self, server: str) -> None:
+        slot = normalize_server(server)
+        if not slot:
+            raise ValueError("server required")
+        path = slot_log_path(slot)
+        if not path.is_file():
+            self._send(404, {"error": "log not found"})
+            return
+        size = path.stat().st_size
+        fname = f"kfm-{slot}.log"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(size))
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{fname}"',
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
+        self.end_headers()
+        with path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 256)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         qs = parse_qs(parsed.query)
-        if path in ("/health", "/api/stats/health"):
-            self._send(200, {"ok": True, "db": mysql_cfg()["db"]})
+        if path == "/api/stats/avatar":
+            # Caddy adds this. The game server connects straight to 127.0.0.1.
+            if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
+                self._send(404, {"error": "not found"})
+                return
+            steam = ((qs.get("steam") or [""])[0] or "").strip()
+            try:
+                body = avatar_text(steam)
+            except Exception as exc:  # noqa: BLE001
+                print(f"avatar failed: {exc}", flush=True)
+                body = "NONE\n"
+            self._send(200, body, "text/plain; charset=ascii")
             return
+        if path in ("/health", "/api/stats/health"):
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "db": mysql_cfg()["db"],
+                    "authConfigured": admin_configured(),
+                },
+            )
+            return
+        # HTML is public shell; data APIs require cookie after password login.
         if path in ("/statistics", "/statistics/index.html"):
             html = HTML_PATH.read_text(encoding="utf-8")
             self._send(200, html, "text/html; charset=utf-8")
             return
+        if path == "/api/stats/me":
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "authed": self._is_authed(),
+                    "authConfigured": admin_configured(),
+                },
+            )
+            return
+        if path in (
+            "/api/stats/summary",
+            "/api/stats/load",
+            "/api/stats/admin/logs",
+            "/api/stats/admin/maps",
+            "/api/stats/admin/status",
+        ):
+            if not self._require_auth():
+                return
         if path == "/api/stats/summary":
             server = normalize_server((qs.get("server") or [None])[0])
-            self._send(200, build_summary(self.con, server))
+            try:
+                payload = build_summary(self.con, server)
+            except Exception as exc:  # noqa: BLE001
+                print(f"summary failed: {exc}", flush=True)
+                try:
+                    with LOCK:
+                        ensure_db(self.con)
+                    payload = build_summary(self.con, server)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"summary retry failed: {exc2}", flush=True)
+                    self._send(500, {"error": "database unavailable"})
+                    return
+            self._send(200, payload)
             return
         if path == "/api/stats/load":
             server = normalize_server((qs.get("server") or [None])[0])
             self._send(200, build_load_series(server))
             return
+        if path == "/api/stats/admin/maps":
+            self._send(200, {"maps": list_available_maps()})
+            return
+        if path == "/api/stats/admin/logs":
+            try:
+                server = (qs.get("server") or [""])[0]
+                lines = int((qs.get("lines") or ["200"])[0] or 200)
+                want_full = str((qs.get("full") or ["0"])[0]).lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                want_dl = str((qs.get("download") or ["0"])[0]).lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                if want_dl:
+                    self._send_log_download(server)
+                else:
+                    self._send(
+                        200,
+                        admin_read_log(server, lines=lines, full=want_full),
+                    )
+            except (ValueError, OSError) as exc:
+                self._send(400, {"error": str(exc)})
+            return
+        if path == "/api/stats/admin/status":
+            with _ADMIN_LOCK:
+                busy = dict(_ADMIN_BUSY)
+            self._send(200, {"busy": busy.get("op"), "started": busy.get("started") or 0})
+            return
         self._send(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
-        if path != "/api/stats/ingest":
-            self._send(404, {"error": "not found"})
+        if path == "/api/stats/ingest":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > 1_000_000:
+                self._send(413, {"error": "body too large"})
+                return
+            raw = self.rfile.read(length) if length else b""
+            body = parse_body(raw, self.headers.get("Content-Type", ""))
+            try:
+                typ = ingest_payload(self.con, body)
+                print(f"ingest http type={typ}", flush=True)
+                self._send(200, {"ok": True})
+            except Exception as exc:  # noqa: BLE001
+                self._send(400, {"error": str(exc)})
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 1_000_000:
-            self._send(413, {"error": "body too large"})
+
+        if path == "/api/stats/login":
+            if not admin_configured():
+                self._send(503, {"error": "STATS_ADMIN_PASSWORD not set"})
+                return
+            try:
+                body = self._read_json_body()
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+                return
+            pw = str(body.get("password") or "")
+            expect = admin_password()
+            pw_dig = hashlib.sha256(pw.encode("utf-8")).digest()
+            exp_dig = hashlib.sha256(expect.encode("utf-8")).digest()
+            if not hmac.compare_digest(pw_dig, exp_dig):
+                time.sleep(0.4)
+                self._send(401, {"error": "bad password"})
+                return
+            token = _make_auth_token()
+            cookie = (
+                f"{ADMIN_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ADMIN_TTL_SEC}"
+            )
+            # Secure when behind HTTPS (Caddy terminates TLS).
+            if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+                cookie += "; Secure"
+            self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
             return
-        raw = self.rfile.read(length) if length else b""
-        body = parse_body(raw, self.headers.get("Content-Type", ""))
-        try:
-            typ = ingest_payload(self.con, body)
-            print(f"ingest http type={typ}", flush=True)
-            self._send(200, {"ok": True})
-        except Exception as exc:  # noqa: BLE001
-            self._send(400, {"error": str(exc)})
+
+        if path == "/api/stats/logout":
+            cookie = f"{ADMIN_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
+            return
+
+        if path in ("/api/stats/admin/restart", "/api/stats/admin/map"):
+            if not self._require_auth():
+                return
+            try:
+                body = self._read_json_body()
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+                return
+            try:
+                if path.endswith("/restart"):
+                    raw_server = str(body.get("server") or "all").strip().lower()
+                    target = None if raw_server in ("", "all", "*") else raw_server
+                    print(f"admin restart target={target or 'all'}", flush=True)
+                    result = admin_restart(target)
+                else:
+                    server = str(body.get("server") or "")
+                    map_name = str(body.get("map") or body.get("map_name") or "")
+                    print(f"admin map server={server} map={map_name}", flush=True)
+                    result = admin_change_map(server, map_name)
+                code = 200 if result.get("ok") else 500
+                self._send(code, result)
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                self._send(500, {"error": str(exc)})
+            return
+
+        self._send(404, {"error": "not found"})
 
 
 def udp_ingest_loop(con) -> None:
@@ -1688,6 +2740,11 @@ def load_env_files() -> None:
 
 def main() -> None:
     load_env_files()
+    if not admin_configured():
+        print(
+            "WARN: STATS_ADMIN_PASSWORD unset — /statistics APIs will reject until set",
+            flush=True,
+        )
     con = connect()
     init_schema(con)
     migrate_sqlite_if_any(con)
@@ -1699,7 +2756,9 @@ def main() -> None:
     print(
         f"kfm-stats listening http+udp://{HOST}:{PORT} "
         f"mysql={cfg['user']}@{cfg['host']}/{cfg['db']} days={DAYS} "
-        f"load={LOAD_INTERVAL_SEC}s keep={LOAD_KEEP}",
+        f"load={LOAD_INTERVAL_SEC}s keep={LOAD_KEEP} "
+        f"admin={'on' if admin_configured() else 'OFF'} "
+        f"avatars={'on' if avatar_pil_ok() else 'OFF'}",
         flush=True,
     )
     httpd.serve_forever()
