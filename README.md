@@ -72,7 +72,7 @@ bEnableStatsPush=True
 StatsHost=127.0.0.1
 StatsPort=8765
 StatsPath=/api/stats/ingest
-StatsServerName=normal
+StatsServerName=meatgrinder
 ```
 
 Same machine as the site: keep `127.0.0.1:8765`. Remote dedicated server (no TLS in

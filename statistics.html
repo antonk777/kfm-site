@@ -116,13 +116,13 @@ th{color:#888;font-weight:600}
   var mapList = [];
   var adminBusy = false;
 
-  var ADMIN_SERVERS = ["normal", "vote"];
+  var ADMIN_SERVERS = ["meatgrinder", "bloodbath"];
   var SERVER_LABELS = {
     "": "Все",
-    normal: "Normal",
-    vote: "Difficulty Vote"
+    meatgrinder: "Meat Grinder",
+    bloodbath: "Bloodbath"
   };
-  var SERVER_ALIASES = { hoe: "vote" };
+  var SERVER_ALIASES = { normal: "meatgrinder", vote: "bloodbath", hoe: "bloodbath" };
   function canonServer(name) {
     var k = String(name || "").toLowerCase();
     return SERVER_ALIASES[k] || k;
@@ -876,8 +876,8 @@ th{color:#888;font-weight:600}
   function renderTabs(D) {
     var tabs = D.serverTabs || [
       { name: "", label: "Все" },
-      { name: "normal", label: "Normal" },
-      { name: "vote", label: "Difficulty Vote" },
+      { name: "meatgrinder", label: "Meat Grinder" },
+      { name: "bloodbath", label: "Bloodbath" },
     ];
     var html = "<div class='tabs' role='tablist'>";
     for (var i = 0; i < tabs.length; i++) {

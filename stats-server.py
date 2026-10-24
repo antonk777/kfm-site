@@ -46,21 +46,22 @@ DAYS = max(30, int(os.environ.get("STATS_DAYS", "180")))
 HTML_PATH = Path(__file__).with_name("statistics.html")
 LOCK = threading.RLock()
 DOWNLOAD_PATH_RE = re.compile(r"^/(download|KFM-Companion[^/]*\.exe)$", re.I)
-# Difficulty slots that still accept stats. Hard and Suicidal stay here so
+# Slots that still accept stats. Hard and Suicidal stay here so
 # «Все» keeps their history, but they are not shown or restarted from the panel.
-KNOWN_SERVERS = ("normal", "hard", "suicidal", "vote")
-PANEL_SERVERS = ("normal", "vote")
+KNOWN_SERVERS = ("meatgrinder", "hard", "suicidal", "bloodbath")
+PANEL_SERVERS = ("meatgrinder", "bloodbath")
 # Legacy short name from before per-slot StatsServerName — drop from UI and aggregates.
 IGNORED_SERVERS = frozenset({"beta"})
-# Retired HoE slot name → Difficulty Vote (same port 7737).
-SERVER_ALIASES = {"hoe": "vote"}
+# Retired slot ids. DB rows, pid files and logs under them belong to the renamed
+# slot: normal → meatgrinder (7717); vote, and hoe before it → bloodbath (7737).
+SERVER_ALIASES = {"normal": "meatgrinder", "vote": "bloodbath", "hoe": "bloodbath"}
 # Game UDP + query UDP (game+1) per slot — used for per-process net counters.
 SLOT_PORTS: dict[str, tuple[int, int]] = {
-    "normal": (7717, 7718),
-    # Hard is offline. 7717 is the Normal server. Keep the name for old rows.
+    "meatgrinder": (7717, 7718),
+    # Hard is offline. 7717 is the Meat Grinder server. Keep the name for old rows.
     "hard": (0, 0),
     "suicidal": (7727, 7728),
-    "vote": (7737, 7738),
+    "bloodbath": (7737, 7738),
 }
 PID_DIR = Path(os.environ.get("KFM_PID_DIR", "/home/kfserver/run"))
 _DOWNLOAD_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -260,12 +261,11 @@ def _pid_from_file(path: Path, slot: str) -> int | None:
 
 def _resolve_slot_pid(slot: str) -> int | None:
     """PID from run/<slot>.pid, verified alive and matching -port=."""
-    pid = _pid_from_file(PID_DIR / f"{slot}.pid", slot)
-    if pid is not None:
-        return pid
-    # Difficulty Vote used to be the HoE slot (same port).
-    if slot == "vote":
-        return _pid_from_file(PID_DIR / "hoe.pid", slot)
+    # A process started before the rename still has its old id's pid file.
+    for name in server_name_variants(slot):
+        pid = _pid_from_file(PID_DIR / f"{name}.pid", slot)
+        if pid is not None:
+            return pid
     return None
 
 
@@ -688,11 +688,12 @@ def get_live_status(server: str) -> dict[str, Any]:
     with _LIVE_LOCK:
         snap = dict(_LIVE.get(server) or {})
         ticks = list(_TICK_SAMPLES.get(server) or [])
-        # Pre-rename live pushes still arrive as hoe.
-        if not snap and server == "vote":
-            snap = dict(_LIVE.get("hoe") or {})
-        if not ticks and server == "vote":
-            ticks = list(_TICK_SAMPLES.get("hoe") or [])
+        # Pre-rename live pushes may sit under a retired id.
+        for old in server_name_variants(server)[1:]:
+            if not snap:
+                snap = dict(_LIVE.get(old) or {})
+            if not ticks:
+                ticks = list(_TICK_SAMPLES.get(old) or [])
     peak = _peak_tick_from_samples(ticks)
     if snap:
         age = now_ts() - int(snap.get("ts") or 0)
@@ -979,7 +980,8 @@ def repair_blank_server_names(con) -> None:
     and only affected «Все» through a nameless daily snapshot.
     """
     cur = con.cursor()
-    for slot in KNOWN_SERVERS:
+    # Keys written before a rename start with the retired id; keep that name.
+    for slot in KNOWN_SERVERS + tuple(SERVER_ALIASES):
         prefix = slot + ":%"
         cur.execute(
             """
@@ -1458,10 +1460,8 @@ def normalize_server(raw: str | None) -> str | None:
 
 
 def server_name_variants(server: str) -> tuple[str, ...]:
-    """DB may still store the retired HoE name for the vote slot."""
-    if server == "vote":
-        return ("vote", "hoe")
-    return (server,)
+    """The slot id, then its retired ids. DB rows may still store those."""
+    return (server,) + tuple(k for k, v in SERVER_ALIASES.items() if v == server)
 
 
 def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tuple[Any, ...]]:
@@ -1471,7 +1471,7 @@ def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tup
             return f" AND {col}=%s", names
         placeholders = ",".join(["%s"] * len(names))
         return f" AND {col} IN ({placeholders})", names
-    # «Все»: live slots plus the retired HoE name — exclude legacy beta / empty / unknown.
+    # «Все»: live slots plus their retired ids — exclude legacy beta / empty / unknown.
     names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
     placeholders = ",".join(["%s"] * len(names))
     return f" AND {col} IN ({placeholders})", tuple(names)
@@ -1483,7 +1483,7 @@ def nonempty_session_sql(col: str = "`player_count`") -> str:
 
 
 def list_servers(con) -> list[dict[str, Any]]:
-    """Servers shown in the admin panel. Old HoE rows count under vote."""
+    """Servers shown in the admin panel. Rows under a retired id count for its slot."""
     cur = con.cursor()
     names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
     placeholders = ",".join(["%s"] * len(names))
@@ -1499,9 +1499,7 @@ def list_servers(con) -> list[dict[str, Any]]:
     counts = {str(r["name"]): int(r["c"]) for r in cur.fetchall()}
     out = []
     for name in PANEL_SERVERS:
-        c = int(counts.get(name, 0))
-        if name == "vote":
-            c += int(counts.get("hoe", 0))
+        c = sum(int(counts.get(n, 0)) for n in server_name_variants(name))
         out.append({"name": name, "c": c})
     return out
 
@@ -1824,10 +1822,10 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             today_peak = peak_by_day(con, [today], server)[0]
 
     SERVER_TAB_LABELS = {
-        "normal": "Normal",
+        "meatgrinder": "Meat Grinder",
         "hard": "Hard",
         "suicidal": "Suicidal",
-        "vote": "Difficulty Vote",
+        "bloodbath": "Bloodbath",
     }
     return {
         "server": server or "",
@@ -2096,12 +2094,12 @@ LOG_COPY_MAX_BYTES = 8_000_000
 
 
 def slot_log_path(slot: str) -> Path:
-    path = KF_LOGS / f"{slot}.log"
-    if slot == "vote" and not path.is_file():
-        legacy = KF_LOGS / "hoe.log"
-        if legacy.is_file():
-            return legacy
-    return path
+    """logs/<slot>.log, or a retired id's log until the renamed slot writes one."""
+    for name in server_name_variants(slot):
+        path = KF_LOGS / f"{name}.log"
+        if path.is_file():
+            return path
+    return KF_LOGS / f"{slot}.log"
 
 
 def admin_read_log(
@@ -2114,10 +2112,6 @@ def admin_read_log(
     if not slot:
         raise ValueError("server required")
     path = slot_log_path(slot)
-    if slot == "vote" and not path.is_file():
-        legacy = KF_LOGS / "hoe.log"
-        if legacy.is_file():
-            path = legacy
     size = path.stat().st_size if path.is_file() else 0
     mtime = int(path.stat().st_mtime) if path.is_file() else 0
     if full:
@@ -2187,9 +2181,9 @@ def admin_restart(server: str | None) -> dict[str, Any]:
         if not slot:
             result = _run_as_kfserver([KF_RESTART], timeout=240)
         else:
-            # Vote replaced hoe on the same port — kill the old name first.
-            if slot == "vote":
-                _run_as_kfserver([KF_STOP, "hoe"], timeout=60)
+            # A process under a retired id holds the same port — stop it first.
+            for old in server_name_variants(slot)[1:]:
+                _run_as_kfserver([KF_STOP, old], timeout=60)
             stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
             start = _run_as_kfserver([KF_START, slot], timeout=120)
             result = {
