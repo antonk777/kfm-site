@@ -2242,11 +2242,16 @@ def admin_change_map(server: str, map_name: str) -> dict[str, Any]:
 
 
 # Tab scoreboard portraits. The game server (127.0.0.1, no X-Forwarded-For)
-# asks once per joining player. 32x32 RGB332 comes back as 16 hex lines so
-# UnrealScript can replicate each line in its own packet.
-_AVATAR_SIDE = 32
-_AVATAR_PIXELS = _AVATAR_SIDE * _AVATAR_SIDE
+# asks once per joining player and replicates the lines to every client, so
+# each format is short text lines UnrealScript can check and resend as is.
+#   /api/stats/avatar    32x32, one RGB332 byte a pixel as hex, 16 lines of 128
+#                        (KFManiacsModRev227 and older).
+#   /api/stats/avatar48  48x48, three characters a pixel (R, G, B), each
+#                        chr(48 + a 6-bit value), 54 lines of 128.
+# Both end with an END line, or the whole body is NONE.
 _AVATAR_CHUNK = 128
+# kind -> (side, cached size). "332" caches RGB332 bytes, "rgb48" plain RGB.
+_AVATAR_KINDS = {"332": (32, 32 * 32), "rgb48": (48, 48 * 48 * 3)}
 _AVATAR_POS_TTL = 24 * 3600
 _AVATAR_NEG_TTL = 10 * 60
 _AVATAR_MISS = object()
@@ -2283,8 +2288,8 @@ def _avatar_cache_dir() -> Path:
 
 
 def _rgb_to_332(rgb: bytes) -> bytes:
-    out = bytearray(_AVATAR_PIXELS)
-    for i in range(_AVATAR_PIXELS):
+    out = bytearray(len(rgb) // 3)
+    for i in range(len(out)):
         r = rgb[i * 3]
         g = rgb[i * 3 + 1]
         b = rgb[i * 3 + 2]
@@ -2295,18 +2300,29 @@ def _rgb_to_332(rgb: bytes) -> bytes:
     return bytes(out)
 
 
-def format_avatar_body(rgb332: bytes | None) -> str:
-    if not rgb332 or len(rgb332) != _AVATAR_PIXELS:
-        return "NONE\n"
-    hexed = rgb332.hex()
-    lines = [hexed[i : i + _AVATAR_CHUNK] for i in range(0, len(hexed), _AVATAR_CHUNK)]
-    if len(lines) != 16 or any(len(line) != _AVATAR_CHUNK for line in lines):
+def _avatar_lines(text: str, count: int) -> str:
+    lines = [text[i : i + _AVATAR_CHUNK] for i in range(0, len(text), _AVATAR_CHUNK)]
+    if len(lines) != count or any(len(line) != _AVATAR_CHUNK for line in lines):
         return "NONE\n"
     return "\n".join(lines) + "\nEND\n"
 
 
+def format_avatar_body(rgb332: bytes | None) -> str:
+    if not rgb332 or len(rgb332) != _AVATAR_KINDS["332"][1]:
+        return "NONE\n"
+    return _avatar_lines(rgb332.hex(), 16)
+
+
+def format_avatar48_body(rgb: bytes | None) -> str:
+    if not rgb or len(rgb) != _AVATAR_KINDS["rgb48"][1]:
+        return "NONE\n"
+    text = bytes(48 + (v * 63 + 127) // 255 for v in rgb).decode("ascii")
+    return _avatar_lines(text, 54)
+
+
 def _avatar_url(xml: str) -> str:
-    for tag in ("avatarMedium", "avatarFull", "avatarIcon"):
+    # Full is 184x184, so a 32 or 48 pixel portrait is a clean downscale.
+    for tag in ("avatarFull", "avatarMedium", "avatarIcon"):
         match = re.search(
             rf"<{tag}>\s*(?:<!\[CDATA\[(.*?)\]\]>|([^<]+?))\s*</{tag}>",
             xml,
@@ -2334,20 +2350,20 @@ def _http_get(url: str, limit: int) -> bytes:
     return data
 
 
-def _image_to_rgb32(blob: bytes) -> bytes | None:
+def _image_to_rgb(blob: bytes, side: int) -> bytes | None:
     from PIL import Image
 
     resample = getattr(Image, "LANCZOS", None) or getattr(Image, "ANTIALIAS")
     image = Image.open(io.BytesIO(blob))
     image = image.convert("RGB")
-    image = image.resize((_AVATAR_SIDE, _AVATAR_SIDE), resample)
+    image = image.resize((side, side), resample)
     raw = image.tobytes() if hasattr(image, "tobytes") else image.tostring()
-    if len(raw) != _AVATAR_PIXELS * 3:
+    if len(raw) != side * side * 3:
         return None
     return raw
 
 
-def _fetch_avatar_332(steam: str) -> bytes | None:
+def _fetch_avatar_rgb(steam: str, side: int) -> bytes | None:
     try:
         xml = _http_get(
             f"https://steamcommunity.com/profiles/{steam}/?xml=1",
@@ -2360,48 +2376,48 @@ def _fetch_avatar_332(steam: str) -> bytes | None:
     if not url:
         return None
     try:
-        rgb = _image_to_rgb32(_http_get(url, 250_000))
+        return _image_to_rgb(_http_get(url, 250_000), side)
     except Exception as exc:  # noqa: BLE001
         print(f"avatar image {steam}: {exc}", flush=True)
         return None
-    if not rgb:
-        return None
-    return _rgb_to_332(rgb)
 
 
-def _avatar_cache_get(steam: str):
+def _avatar_cache_get(steam: str, kind: str):
+    key = f"{steam}.{kind}"
+    size = _AVATAR_KINDS[kind][1]
     now = time.time()
     with _AVATAR_LOCK:
-        hit = _AVATAR_MEM.get(steam)
+        hit = _AVATAR_MEM.get(key)
         if hit and hit[0] > now:
             return hit[1]
     folder = _avatar_cache_dir()
-    fresh = folder / f"{steam}.332"
-    missing = folder / f"{steam}.none"
+    fresh = folder / key
+    missing = folder / f"{key}.none"
     try:
         if fresh.is_file() and now - fresh.stat().st_mtime < _AVATAR_POS_TTL:
             data = fresh.read_bytes()
-            if len(data) == _AVATAR_PIXELS:
+            if len(data) == size:
                 with _AVATAR_LOCK:
-                    _AVATAR_MEM[steam] = (now + _AVATAR_POS_TTL, data)
+                    _AVATAR_MEM[key] = (now + _AVATAR_POS_TTL, data)
                 return data
         if missing.is_file() and now - missing.stat().st_mtime < _AVATAR_NEG_TTL:
             with _AVATAR_LOCK:
-                _AVATAR_MEM[steam] = (now + _AVATAR_NEG_TTL, None)
+                _AVATAR_MEM[key] = (now + _AVATAR_NEG_TTL, None)
             return None
     except OSError:
         pass
     return _AVATAR_MISS
 
 
-def _avatar_cache_put(steam: str, blob: bytes | None) -> None:
+def _avatar_cache_put(steam: str, kind: str, blob: bytes | None) -> None:
+    key = f"{steam}.{kind}"
     ttl = _AVATAR_POS_TTL if blob else _AVATAR_NEG_TTL
     with _AVATAR_LOCK:
-        _AVATAR_MEM[steam] = (time.time() + ttl, blob)
+        _AVATAR_MEM[key] = (time.time() + ttl, blob)
     try:
         folder = _avatar_cache_dir()
-        fresh = folder / f"{steam}.332"
-        missing = folder / f"{steam}.none"
+        fresh = folder / key
+        missing = folder / f"{key}.none"
         if blob:
             fresh.write_bytes(blob)
             if missing.exists():
@@ -2414,21 +2430,32 @@ def _avatar_cache_put(steam: str, blob: bytes | None) -> None:
         print(f"avatar cache: {exc}", flush=True)
 
 
-def avatar_rgb332(steam: str) -> bytes | None:
+def _avatar_blob(steam: str, kind: str, convert) -> bytes | None:
     if not _STEAM_ID_RE.fullmatch(steam or ""):
         return None
     if not avatar_pil_ok():
         return None
-    cached = _avatar_cache_get(steam)
+    cached = _avatar_cache_get(steam, kind)
     if cached is not _AVATAR_MISS:
         return cached
-    blob = _fetch_avatar_332(steam)
-    _avatar_cache_put(steam, blob)
+    rgb = _fetch_avatar_rgb(steam, _AVATAR_KINDS[kind][0])
+    blob = convert(rgb) if rgb else None
+    _avatar_cache_put(steam, kind, blob)
     return blob
 
 
 def avatar_text(steam: str) -> str:
-    return format_avatar_body(avatar_rgb332(steam))
+    return format_avatar_body(_avatar_blob(steam, "332", _rgb_to_332))
+
+
+def avatar48_text(steam: str) -> str:
+    return format_avatar48_body(_avatar_blob(steam, "rgb48", bytes))
+
+
+AVATAR_ROUTES = {
+    "/api/stats/avatar": avatar_text,
+    "/api/stats/avatar48": avatar48_text,
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2521,14 +2548,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         qs = parse_qs(parsed.query)
-        if path == "/api/stats/avatar":
+        if path in AVATAR_ROUTES:
             # Caddy adds this. The game server connects straight to 127.0.0.1.
             if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
                 self._send(404, {"error": "not found"})
                 return
             steam = ((qs.get("steam") or [""])[0] or "").strip()
             try:
-                body = avatar_text(steam)
+                body = AVATAR_ROUTES[path](steam)
             except Exception as exc:  # noqa: BLE001
                 print(f"avatar failed: {exc}", flush=True)
                 body = "NONE\n"
