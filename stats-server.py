@@ -1741,6 +1741,37 @@ def avg_playtime_by_day(con, days: list[int], server: str | None = None) -> list
     return out
 
 
+# Countries pie: the biggest slices, the rest summed into "other".
+COUNTRY_SLICES = 11
+
+
+def player_countries(con, ms_srv_sql: str, ms_srv_args: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Distinct players by the country of their last IP (perkhost fills `players.country`)."""
+    cur = con.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT p.`country` AS name, COUNT(DISTINCT sp.`steam_id`) AS c
+            FROM `site_session_players` sp
+            INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
+            INNER JOIN `players` p ON p.`steam_id`=sp.`steam_id`
+            WHERE p.`country` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
+            GROUP BY p.`country`
+            ORDER BY c DESC
+            """,
+            ms_srv_args,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # No `country` column until perkhost restarts with the migration.
+        print(f"countries failed: {exc}", flush=True)
+        return []
+    rows = [{"name": r["name"], "c": int(r["c"])} for r in cur.fetchall()]
+    if len(rows) > COUNTRY_SLICES + 1:
+        rest = sum(r["c"] for r in rows[COUNTRY_SLICES:])
+        rows = rows[:COUNTRY_SLICES] + [{"name": "other", "c": rest}]
+    return rows
+
+
 def build_summary(con, server: str | None = None) -> dict[str, Any]:
     today = day_from_ts(now_ts())
     min_day = add_days(today, -(DAYS - 1))
@@ -1812,6 +1843,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             srv_args,
         )
         loss_waves = [{"name": r["name"], "c": int(r["c"])} for r in cur.fetchall()]
+        countries = player_countries(con, ms_srv_sql, ms_srv_args)
         servers = list_servers(con)
         today_idx = days.index(today) if today in days else -1
         if today_idx >= 0:
@@ -1855,6 +1887,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         "maps": maps,
         "outcomes": outcomes,
         "loss_waves": loss_waves,
+        "countries": countries,
         "servers": servers,
     }
 

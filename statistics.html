@@ -14,6 +14,7 @@ html,body{margin:0;padding:0;background:#111;color:#eee;font:14px/1.4 Segoe UI,A
 h1{margin:0 0 6px;font-size:22px;color:#fff}
 h2{margin:28px 0 10px;font-size:16px;color:#ddd;font-weight:600}
 .sub{color:#aaa;margin:0 0 18px}
+.sub a{color:#5cc8e6}
 .cards{display:flex;gap:12px;margin:0 0 18px;flex-wrap:wrap}
 .card{background:#1c1c1c;border:1px solid #333;border-radius:8px;padding:12px 16px;min-width:140px}
 .card b{display:block;font-size:26px;color:#fff}
@@ -165,6 +166,20 @@ th{color:#888;font-weight:600}
     return (items || []).map(function (it) {
       return { name: labelOf(it.name), c: it.c };
     });
+  }
+  var REGION_RU = null;
+  try {
+    REGION_RU = new Intl.DisplayNames(["ru"], { type: "region" });
+  } catch (e) {}
+  // "DE" -> "Германия (DE)"; "other" is the server's sum of the small slices.
+  function countryLabel(code) {
+    var cc = String(code || "").toUpperCase();
+    if (cc === "OTHER") return "Другие";
+    var name = "";
+    try {
+      name = REGION_RU ? REGION_RU.of(cc) : "";
+    } catch (e) {}
+    return name && name !== cc ? name + " (" + cc + ")" : cc;
   }
   function tabLabel(name) {
     var k = canonServer(name);
@@ -1076,6 +1091,9 @@ th{color:#888;font-weight:600}
       "<div><h2>Карты</h2><div class='box'><div class='chart-wrap pie'><canvas id='cMaps'></canvas></div></div></div>" +
       "<div><h2>Исходы</h2><div class='box'><div class='chart-wrap pie'><canvas id='cOut'></canvas></div></div></div>" +
       "<div><h2>Волна поражения</h2><div class='box'><div class='chart-wrap pie'><canvas id='cLoss'></canvas></div></div></div>" +
+      "<div><h2>Страны</h2><div class='box'><div class='chart-wrap pie'><canvas id='cCountries'></canvas></div></div>" +
+      "<p class='sub'>Разные игроки по стране последнего IP. " +
+      "<a href='https://db-ip.com' target='_blank' rel='noopener'>IP Geolocation by DB-IP</a></p></div>" +
       serversBlock +
       "</div>" +
       "<h2>История</h2>" +
@@ -1127,6 +1145,12 @@ th{color:#888;font-weight:600}
       "cLoss",
       (D.loss_waves || []).map(function (it) {
         return { name: "Волна " + it.name, c: it.c };
+      })
+    );
+    makePieChart(
+      "cCountries",
+      (D.countries || []).map(function (it) {
+        return { name: countryLabel(it.name), c: it.c };
       })
     );
     if (document.getElementById("cServers"))
