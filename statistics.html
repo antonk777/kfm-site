@@ -729,6 +729,8 @@ th{color:#888;font-weight:600}
       (title ? "<h3>" + esc(title) + "</h3>" : "") +
       "<p class='live-meta'>Карта: <b>" +
       esc(fmtLiveMap(L.map)) +
+      "</b> · Сложность: <b>" +
+      esc(fmtDifficulty(L.difficulty)) +
       "</b> · " +
       wave +
       " · Онлайн: <b>" +
@@ -935,6 +937,18 @@ th{color:#888;font-weight:600}
     name = String(name || "");
     if (name.indexOf("KF-") === 0) name = name.slice(3);
     return name || "—";
+  }
+
+  // Same steps and names as the in-game difficulty vote.
+  function fmtDifficulty(d) {
+    var n = Number(d);
+    if (!isFinite(n) || n <= 0) return "—";
+    if (n >= 8) return "Брутальный";
+    if (n >= 7) return "АД";
+    if (n >= 5) return "Суицидальный";
+    if (n >= 4) return "Сложный";
+    if (n >= 2) return "Нормальный";
+    return "Новичок";
   }
 
   function fmtTickBadge(ms, label) {

@@ -81,6 +81,9 @@ _LIVE: dict[str, dict[str, Any]] = {}
 # Per-slot tick history from live pushes (rolling peak window).
 _TICK_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
 LIVE_STALE_SEC = 45.0
+# Live pushes from mod builds without `diff`: server -> (map, checked_at, difficulty).
+_DIFF_FALLBACK: dict[str, tuple[str, int, float]] = {}
+DIFF_FALLBACK_SEC = 60
 # Peak health / badge uses last N seconds; keep enough history for the load chart too.
 TICK_PEAK_WINDOW_SEC = 300  # 5 minutes
 TICK_KEEP_SEC = TICK_PEAK_WINDOW_SEC + int(LOAD_INTERVAL_SEC * LOAD_KEEP) + 30
@@ -534,11 +537,15 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
     tick_ms = int(num(p.get("worstTick"), -1))
     ts = now_ts()
+    difficulty = float(num(p.get("diff"), 0.0))
+    if difficulty <= 0 and map_name:
+        difficulty = _session_difficulty(con, server, map_name, ts)
     snap = {
         "server": server,
         "map": map_name,
         "wave": int(num(p.get("wave"), 0)),
         "finalWave": int(num(p.get("finalWave"), num(p.get("final_wave"), 0))),
+        "difficulty": difficulty,
         "online": online,
         "players": players,
         "worstTick": tick_ms,
@@ -556,12 +563,38 @@ def ingest_live(con, p: dict[str, Any]) -> None:
         _LIVE[server] = snap
 
 
+def _session_difficulty(con, server: str, map_name: str, ts: int) -> float:
+    """Difficulty of the newest session on this slot and map, 0 when unknown.
+
+    A difficulty change always restarts the map, so the newest row is current.
+    Caller holds LOCK.
+    """
+    cached = _DIFF_FALLBACK.get(server)
+    if cached and cached[0] == map_name and ts - cached[1] < DIFF_FALLBACK_SEC:
+        return cached[2]
+    names = server_name_variants(server)
+    placeholders = ",".join(["%s"] * len(names))
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT `difficulty` FROM `site_map_sessions`
+        WHERE `server_name` IN ({placeholders}) AND `map_name`=%s AND `difficulty`>0
+        ORDER BY `started_at` DESC LIMIT 1
+        """,
+        (*names, map_name),
+    )
+    row = cur.fetchone()
+    diff = float(row["difficulty"]) if row else 0.0
+    _DIFF_FALLBACK[server] = (map_name, ts, diff)
+    return diff
+
+
 def _live_from_db(con, server: str) -> dict[str, Any] | None:
     """Fallback from open map session (may be stale until mutator live push)."""
     cur = con.cursor()
     cur.execute(
         """
-        SELECT `id`, `map_name`, `wave`, `final_wave`, `player_count`, `started_at`
+        SELECT `id`, `map_name`, `wave`, `final_wave`, `difficulty`, `player_count`, `started_at`
         FROM `site_map_sessions`
         WHERE `server_name`=%s AND `ended_at`=0 AND `player_count`>0
         ORDER BY `started_at` DESC LIMIT 1
@@ -598,6 +631,7 @@ def _live_from_db(con, server: str) -> dict[str, Any] | None:
         "map": str(row["map_name"] or "")[:64],
         "wave": int(row["wave"] or 0),
         "finalWave": int(row["final_wave"] or 0),
+        "difficulty": float(row["difficulty"] or 0),
         "online": len(players),
         "players": players,
         "worstTick": -1,
@@ -676,6 +710,7 @@ def get_live_status(server: str) -> dict[str, Any]:
         "map": "",
         "wave": 0,
         "finalWave": 0,
+        "difficulty": 0,
         "online": 0,
         "players": [],
         "worstTick": -1,
