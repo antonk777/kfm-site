@@ -529,10 +529,10 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     server = canon_server_name(p.get("server") or p.get("server_name"))
     if not server:
         return
+    # The live card lists everyone on the server, admins included. Admins are
+    # dropped only from the stats (sessions, uniques, peaks), not from "who is
+    # playing right now".
     players = _parse_live_players(str(p.get("players") or ""))
-    admins = admin_steam_set(con, [str(pl.get("steam") or "") for pl in players])
-    if admins:
-        players = [pl for pl in players if str(pl.get("steam") or "") not in admins]
     online = len(players)
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
     tick_ms = int(num(p.get("worstTick"), -1))
@@ -624,7 +624,6 @@ def _live_from_db(con, server: str) -> dict[str, Any] | None:
             "steam": str(r["steam"] or "")[:64],
         }
         for r in cur.fetchall()
-        if not is_admin_steam(con, str(r["steam"] or ""))
     ]
     return {
         "server": server,
@@ -993,19 +992,6 @@ def is_admin_steam(con, steam: str) -> bool:
     )
     row = cur.fetchone()
     return bool(row and int(row.get("a") or 0) != 0)
-
-
-def admin_steam_set(con, steams: list[str]) -> set[str]:
-    ids = [s for s in {str(x or "").strip() for x in steams} if s]
-    if not ids:
-        return set()
-    placeholders = ",".join(["%s"] * len(ids))
-    cur = con.cursor()
-    cur.execute(
-        f"SELECT `steam_id` AS id FROM `players` WHERE `admin`<>0 AND `steam_id` IN ({placeholders})",
-        tuple(ids),
-    )
-    return {str(r["id"]) for r in cur.fetchall()}
 
 
 def repair_blank_server_names(con) -> None:
