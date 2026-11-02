@@ -50,6 +50,22 @@ DOWNLOAD_PATH_RE = re.compile(r"^/(download|KFM-Companion[^/]*\.exe)$", re.I)
 # «Все» keeps their history, but they are not shown or restarted from the panel.
 KNOWN_SERVERS = ("meatgrinder", "hard", "suicidal", "bloodbath")
 PANEL_SERVERS = ("meatgrinder", "bloodbath")
+SERVER_LABELS = {
+    "meatgrinder": "Meat Grinder",
+    "hard": "Hard",
+    "suicidal": "Suicidal",
+    "bloodbath": "Bloodbath",
+}
+# Public monitor on the landing page (/api/stats/servers). The join link is
+# steam://run/1250//<PUBLIC_HOST>:<game port>, as the old kfmaniacs.ru monitor
+# did: Steam starts KillingFloor.exe with the address on its command line and
+# the game connects itself. steam://connect/ does not work for KF1 here: Steam
+# verifies the server through its backend first and answers "app id specified
+# by server is invalid" for any port (the servers run RevEmu, not real Steam).
+# MaxPlayers= is set in start.sh.
+PUBLIC_HOST = os.environ.get("KFM_PUBLIC_HOST") or os.environ.get("SITE_IP") or "85.192.30.108"
+MAX_PLAYERS = 6
+KF_APP_ID = 1250
 # Legacy short name from before per-slot StatsServerName — drop from UI and aggregates.
 IGNORED_SERVERS = frozenset({"beta"})
 # Retired slot ids. DB rows, pid files and logs under them belong to the renamed
@@ -754,6 +770,63 @@ def get_live_status(server: str) -> dict[str, Any]:
         return _attach_health(snap)
     empty["peakTick"] = peak
     return _attach_health(empty)
+
+
+def difficulty_name(d: Any) -> str:
+    """Same steps as KFGameTypeMv2.GetDifficultyName; empty when unknown."""
+    try:
+        n = float(d)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n >= 8:
+        return "Brutal"
+    if n >= 7:
+        return "Hell on Earth"
+    if n >= 5:
+        return "Suicidal"
+    if n >= 4:
+        return "Hard"
+    if n >= 2:
+        return "Normal"
+    return "Beginner"
+
+
+def build_public_servers() -> dict[str, Any]:
+    """Landing-page monitor: the panel servers without steam ids or tick data.
+
+    Stale means no live push within LIVE_STALE_SEC; the map and players then
+    come from the last snapshot (or the open DB session) and may be old.
+    """
+    out = []
+    for slot in PANEL_SERVERS:
+        live = get_live_status(slot)
+        port = SLOT_PORTS.get(slot, (0, 0))[0]
+        players = [
+            {"name": str(p.get("name") or "")[:64], "perk": str(p.get("perk") or "")[:32]}
+            for p in (live.get("players") or [])
+        ]
+        out.append(
+            {
+                "id": slot,
+                "label": SERVER_LABELS.get(slot, slot),
+                "host": PUBLIC_HOST,
+                "port": port,
+                "steam": f"steam://run/{KF_APP_ID}//{PUBLIC_HOST}:{port}",
+                "map": str(live.get("map") or ""),
+                "difficulty": float(live.get("difficulty") or 0),
+                "difficultyName": difficulty_name(live.get("difficulty")),
+                "wave": int(live.get("wave") or 0),
+                "finalWave": int(live.get("finalWave") or 0),
+                "online": int(live.get("online") or len(players)),
+                "maxPlayers": MAX_PLAYERS,
+                "players": players,
+                "stale": bool(live.get("stale")),
+                "updated": int(live.get("ts") or 0),
+            }
+        )
+    return {"ts": now_ts(), "servers": out}
 
 
 def mysql_cfg() -> dict[str, Any]:
@@ -1874,17 +1947,11 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             today_unique = unique_by_day(con, [today], server)[0]
             today_peak = peak_by_day(con, [today], server)[0]
 
-    SERVER_TAB_LABELS = {
-        "meatgrinder": "Meat Grinder",
-        "hard": "Hard",
-        "suicidal": "Suicidal",
-        "bloodbath": "Bloodbath",
-    }
     return {
         "server": server or "",
         "serverTabs": [{"name": "", "label": "Все"}]
         + [
-            {"name": s, "label": SERVER_TAB_LABELS.get(s, s)}
+            {"name": s, "label": SERVER_LABELS.get(s, s)}
             for s in PANEL_SERVERS
         ],
         "days": days,
@@ -2618,6 +2685,16 @@ class Handler(BaseHTTPRequestHandler):
                     "authConfigured": admin_configured(),
                 },
             )
+            return
+        # Public: the landing page's server monitor.
+        if path == "/api/stats/servers":
+            try:
+                payload = build_public_servers()
+            except Exception as exc:  # noqa: BLE001
+                print(f"servers failed: {exc}", flush=True)
+                self._send(500, {"error": "unavailable"})
+                return
+            self._send(200, payload)
             return
         # HTML is public shell; data APIs require cookie after password login.
         if path in ("/statistics", "/statistics/index.html"):

@@ -66,6 +66,10 @@ fi
 install -m 644 "${SCRIPT_DIR}/index.html" "${SITE_ROOT}/index.html"
 install -m 644 "${SCRIPT_DIR}/favicon.ico" "${SITE_ROOT}/favicon.ico"
 install -m 644 "${SCRIPT_DIR}/kf-maniacs-logo.svg" "${SITE_ROOT}/kf-maniacs-logo.svg"
+mkdir -p "${SITE_ROOT}/maps"
+for f in "${SCRIPT_DIR}"/maps/*.jpg; do
+  [ -f "$f" ] && install -m 644 "$f" "${SITE_ROOT}/maps/$(basename "$f")"
+done
 
 if [ "${SKIP_FETCH:-0}" != "1" ]; then
   if [ -z "${COMPANION_GITHUB_TOKEN:-}${GITHUB_TOKEN:-}" ]; then

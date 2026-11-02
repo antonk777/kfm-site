@@ -4,7 +4,8 @@ Public download page for **KFM Companion** at [https://kfm.manul.lol/](https://k
 
 | Piece | Role |
 |-------|------|
-| `index.html` | Landing page, EN/RU/ZH/ES/PT, changelog |
+| `index.html` | Landing page, EN/RU/ZH/ES/PT, server monitor, changelog |
+| `maps/*.jpg` | Map previews for the monitor, from `tools/gen_map_shots.py` in kfm-mut |
 | `fetch-companion.mjs` | Pulls latest `.exe` from private `antonk777/KFMLauncher` releases |
 | `release.json` | Written at sync time; page reads `tag` / `file` / changelog |
 | `Caddyfile` | TLS, static files, forced download headers, JSON access log |
@@ -41,6 +42,26 @@ sudo bash install-release-hook.sh   # deploy key + print pubkey / secret hints
 sudo cp systemd/kfm-site-sync.service systemd/kfm-site-sync.timer /etc/systemd/system/
 sudo systemctl enable --now kfm-site-sync.timer
 ```
+
+## Server monitor on the landing page
+
+The first block of `index.html` lists the panel servers (Meat Grinder, Bloodbath):
+map preview, map name, difficulty, wave, players, a `steam://run/1250//<ip>:<game port>`
+button (Steam starts the game with the address on its command line; `steam://connect`
+fails for these servers) and a collapsible player list (names and perks, no steam ids). It polls the
+public `GET /api/stats/servers` every 10 s; the data is the same live push that feeds
+the `/statistics/` live card (`stale` = no push within 45 s, the card dims).
+
+Map previews are `maps/<map name in lower case>.jpg` (512x288, 16:9), the screenshot each
+map's `LevelSummary` names, decoded straight from the `.rom`. Regenerate after new maps
+land on the servers (in kfm-mut):
+
+```bash
+python -I tools/gen_map_shots.py --remote   # runs on the game server against its Maps, fetches the JPEGs
+python -I tools/gen_map_shots.py            # same for the local KF install
+```
+
+A map without a file shows the caption on a plain background.
 
 ## Download counts
 
