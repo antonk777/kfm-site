@@ -718,7 +718,9 @@ def tick_health(
 
 
 def _attach_health(snap: dict[str, Any]) -> dict[str, Any]:
+    """Health badge plus the Steam listing poll for the /statistics live card."""
     snap = dict(snap)
+    snap["steam"] = steam_listing_for(str(snap.get("server") or ""))
     peak = snap.get("peakTick", -1)
     if peak is None or int(peak) < 0:
         peak = snap.get("worstTick", -1)
@@ -838,13 +840,9 @@ def build_public_servers() -> dict[str, Any]:
                 "players": players,
                 "stale": bool(live.get("stale")),
                 "updated": int(live.get("ts") or 0),
-                "steam": steam_listing_for(slot),
             }
         )
-    with _STEAM_LOCK:
-        steam_checked = int(_STEAM.get("ts") or 0)
-        steam_error = str(_STEAM.get("error") or "")
-    return {"ts": now_ts(), "servers": out, "steamChecked": steam_checked, "steamError": steam_error}
+    return {"ts": now_ts(), "servers": out}
 
 
 def steam_api_key() -> str:
@@ -897,6 +895,7 @@ def fetch_steam_listing() -> dict[str, dict[str, Any]]:
 
 def steam_listing_for(slot: str) -> dict[str, Any] | None:
     """Last poll result for one slot, or None before the first successful poll."""
+    slot = SERVER_ALIASES.get(slot, slot)
     with _STEAM_LOCK:
         ts = int(_STEAM.get("ts") or 0)
         entry = _STEAM.get("listed", {}).get(slot)

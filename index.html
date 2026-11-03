@@ -287,8 +287,34 @@
     .server-addr {
       margin: 0;
       padding: 0 0.75rem 0.6rem;
-      user-select: all;
+      user-select: none;
     }
+    .server-addr .ip {
+      position: relative;
+      user-select: all;
+      cursor: pointer;
+      color: #b9b09c;
+      text-decoration: underline dotted #4a443a;
+      text-underline-offset: 0.2em;
+    }
+    .server-addr .ip:hover { color: #e6c35c; }
+    .server-addr .ip::after {
+      content: attr(data-tip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 0.4rem);
+      transform: translateX(-50%);
+      padding: 0.25rem 0.5rem;
+      background: #2a2a2a;
+      color: #eee;
+      font-size: 0.8rem;
+      white-space: nowrap;
+      border: 1px solid #3a3a3a;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s;
+    }
+    .server-addr .ip.copied::after { opacity: 1; }
     .servers .error {
       text-align: center;
       color: #7a7366;
@@ -401,15 +427,15 @@
     };
 
     const SRV_I18N = {
-      en: { servers: "Our servers", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", loading: "Loading…", unavailable: "Server monitor is unavailable right now.", steamListed: "Listed in the Steam browser", steamMissing: "Missing from the Steam browser", steamChecked: "Steam list checked at",
+      en: { servers: "Our servers", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", copied: "Copied", loading: "Loading…", unavailable: "Server monitor is unavailable right now.", steamListed: "Listed in the Steam browser", steamMissing: "Missing from the Steam browser", steamChecked: "Steam list checked at",
             diff: { beginner: "Beginner", normal: "Normal", hard: "Hard", suicidal: "Suicidal", hoe: "Hell on Earth", brutal: "Brutal" } },
-      ru: { servers: "Наши серверы", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.", steamListed: "Есть в списке серверов Steam", steamMissing: "Нет в списке серверов Steam", steamChecked: "Список Steam проверен в",
+      ru: { servers: "Наши серверы", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", copied: "Скопировано", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.", steamListed: "Есть в списке серверов Steam", steamMissing: "Нет в списке серверов Steam", steamChecked: "Список Steam проверен в",
             diff: { beginner: "Новичок", normal: "Нормальный", hard: "Сложный", suicidal: "Суицидальный", hoe: "Ад на Земле", brutal: "Брутальный" } },
-      zh: { servers: "我们的服务器", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", loading: "加载中…", unavailable: "服务器监控暂时不可用。", steamListed: "已在 Steam 服务器列表中", steamMissing: "不在 Steam 服务器列表中", steamChecked: "Steam 列表检查时间",
+      zh: { servers: "我们的服务器", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", copied: "已复制", loading: "加载中…", unavailable: "服务器监控暂时不可用。", steamListed: "已在 Steam 服务器列表中", steamMissing: "不在 Steam 服务器列表中", steamChecked: "Steam 列表检查时间",
             diff: { beginner: "新手", normal: "普通", hard: "困难", suicidal: "自杀", hoe: "人间地狱", brutal: "残酷" } },
-      es: { servers: "Nuestros servidores", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.", steamListed: "En la lista de servidores de Steam", steamMissing: "No aparece en la lista de Steam", steamChecked: "Lista de Steam comprobada a las",
+      es: { servers: "Nuestros servidores", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", copied: "Copiado", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.", steamListed: "En la lista de servidores de Steam", steamMissing: "No aparece en la lista de Steam", steamChecked: "Lista de Steam comprobada a las",
             diff: { beginner: "Principiante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Infierno en la Tierra", brutal: "Brutal" } },
-      pt: { servers: "Nossos servidores", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.", steamListed: "Na lista de servidores do Steam", steamMissing: "Fora da lista de servidores do Steam", steamChecked: "Lista do Steam verificada às",
+      pt: { servers: "Nossos servidores", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", copied: "Copiado", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.", steamListed: "Na lista de servidores do Steam", steamMissing: "Fora da lista de servidores do Steam", steamChecked: "Lista do Steam verificada às",
             diff: { beginner: "Iniciante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Inferno na Terra", brutal: "Brutal" } }
     };
     Object.keys(SRV_I18N).forEach((l) => { I18N[l].servers = SRV_I18N[l].servers; });
@@ -455,6 +481,21 @@
       return node;
     }
 
+    // Clipboard without the async API (http:// origins, old browsers).
+    function fallbackCopy(text) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+
     function buildCard(srv) {
       const card = el("article", "server-card");
       card.dataset.server = srv.id;
@@ -485,7 +526,26 @@
       actions.appendChild(toggle);
       card.appendChild(actions);
       card.appendChild(el("ul", "plist"));
-      card.appendChild(el("p", "server-addr"));
+      const addr = el("p", "server-addr");
+      addr.appendChild(el("span", "lbl"));
+      const ip = el("span", "ip");
+      ip.title = "";
+      ip.addEventListener("click", () => {
+        const text = ip.textContent;
+        const done = () => {
+          ip.dataset.tip = srvText("copied");
+          ip.classList.add("copied");
+          clearTimeout(ip._tipTimer);
+          ip._tipTimer = setTimeout(() => ip.classList.remove("copied"), 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text) && done());
+        } else if (fallbackCopy(text)) {
+          done();
+        }
+      });
+      addr.appendChild(ip);
+      card.appendChild(addr);
       return card;
     }
 
@@ -544,7 +604,8 @@
           list.appendChild(li);
         });
       }
-      card.querySelector(".server-addr").textContent = srvText("address") + ": " + srv.host + ":" + srv.port;
+      card.querySelector(".server-addr .lbl").textContent = srvText("address") + ": ";
+      card.querySelector(".server-addr .ip").textContent = srv.host + ":" + srv.port;
     }
 
     function renderServers() {

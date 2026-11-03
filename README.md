@@ -52,15 +52,21 @@ fails for these servers) and a collapsible player list (names and perks, no stea
 public `GET /api/stats/servers` every 10 s; the data is the same live push that feeds
 the `/statistics/` live card (`stale` = no push within 45 s, the card dims).
 
-Each card also says whether the server is in the list Steam hands to the in-game and
-Steam-client browsers (`steam.listed`). `stats-server.py` asks
-`IGameServersService/GetServerList` for this host once every 10 minutes
-(`STEAM_POLL_SEC`), never on request, and keeps the last answer through errors; it needs
-`STEAM_WEB_API_KEY` in `/etc/kfm-site.env`, without it the tag is absent. A server that
-answers on its game port but is "missing" here is the Steam query port
-(28852 + game port - 7707) being closed in the host firewall, see
+The address line selects only the `ip:port`; a click copies it to the clipboard and
+shows a short "Copied" tooltip.
+
+## Steam listing check on /statistics
+
+The live card on `/statistics/` has a "Браузер Steam" line: whether the server is in
+the list Steam hands to the in-game and Steam-client browsers (`live.steam.listed`,
+also in `liveAll`), what Steam sees (players, map) and when it was checked.
+`stats-server.py` asks `IGameServersService/GetServerList` for this host once every
+10 minutes (`STEAM_POLL_SEC`), never on request, and keeps the last answer through
+errors; it needs `STEAM_WEB_API_KEY` in `/etc/kfm-site.env`, without it the line is
+absent. A server that answers on its game port but is "missing" here is the Steam
+query port (28852 + game port - 7707) being closed in the host firewall, see
 `server-scripts/kf-firewall.sh`. `GET /api/stats/admin/status` returns the raw poll
-(`steam.listed`, `steam.error`).
+(`steam.listed`, `steam.error`). The public `/api/stats/servers` does not carry it.
 
 Map previews are `maps/<map name in lower case>.jpg` (512x288, 16:9), the screenshot each
 map's `LevelSummary` names, decoded straight from the `.rom`. Regenerate after new maps

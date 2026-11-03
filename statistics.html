@@ -51,6 +51,9 @@ th{color:#888;font-weight:600}
 .live-players .perk{color:#8fd16a}
 .live-empty{color:#666;font-size:11px;margin:0}
 .live-stale{color:#e6c35c;font-size:10px;margin:5px 0 0}
+.live-steam{color:#aaa;font-size:11px;margin:0 0 6px}
+.live-steam b.ok{color:#8fd16a}
+.live-steam b.bad{color:#e07070}
 .live-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px}
 .live-head h2{margin:0}
 .live-head-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -699,6 +702,19 @@ th{color:#888;font-weight:600}
     );
   }
 
+  // Steam listing: the server's own 10-minute GetServerList poll, so it lags
+  // the live push. Missing with the game port up = the Steam query port
+  // (28852 + game port - 7707) closed in the host firewall.
+  function fmtSteamLine(S) {
+    if (!S || !S.checked) return "";
+    var when = new Date(S.checked * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    var state = S.listed
+      ? "<b class='ok'>есть в списке</b>"
+      : "<b class='bad'>нет в списке</b> (порт " + (S.queryPort || "?") + " не отвечает?)";
+    var seen = S.listed ? " · Steam видит: " + (S.players != null ? S.players : "?") + " игр., " + esc(fmtLiveMap(S.map)) : "";
+    return "<p class='live-steam'>Браузер Steam: " + state + seen + " · проверено " + when + "</p>";
+  }
+
   function renderLiveBody(L, title) {
     var players = L.players || [];
     var wave =
@@ -739,6 +755,7 @@ th{color:#888;font-weight:600}
       fmtTickBadge(L.worstTick, "Тик окна") +
       fmtTickBadge(L.peakTick, "Пик 5 мин") +
       "</p>" +
+      fmtSteamLine(L.steam) +
       list +
       (L.stale && (L.map || players.length)
         ? "<p class='live-stale'>Данные могут быть устаревшими (нет свежего live-пуша)</p>"
