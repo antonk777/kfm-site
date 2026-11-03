@@ -224,6 +224,8 @@
     }
     .server-meta:empty { display: none; }
     .server-meta .status { color: #e6c35c; }
+    .server-meta .steam.ok { color: #8fbf7f; }
+    .server-meta .steam.bad { color: #e66b5c; }
     .server-actions {
       display: flex;
       gap: 0.5rem;
@@ -399,21 +401,22 @@
     };
 
     const SRV_I18N = {
-      en: { servers: "Our servers", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", loading: "Loading…", unavailable: "Server monitor is unavailable right now.",
+      en: { servers: "Our servers", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", loading: "Loading…", unavailable: "Server monitor is unavailable right now.", steamListed: "Listed in the Steam browser", steamMissing: "Missing from the Steam browser", steamChecked: "Steam list checked at",
             diff: { beginner: "Beginner", normal: "Normal", hard: "Hard", suicidal: "Suicidal", hoe: "Hell on Earth", brutal: "Brutal" } },
-      ru: { servers: "Наши серверы", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.",
+      ru: { servers: "Наши серверы", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.", steamListed: "Есть в списке серверов Steam", steamMissing: "Нет в списке серверов Steam", steamChecked: "Список Steam проверен в",
             diff: { beginner: "Новичок", normal: "Нормальный", hard: "Сложный", suicidal: "Суицидальный", hoe: "Ад на Земле", brutal: "Брутальный" } },
-      zh: { servers: "我们的服务器", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", loading: "加载中…", unavailable: "服务器监控暂时不可用。",
+      zh: { servers: "我们的服务器", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", loading: "加载中…", unavailable: "服务器监控暂时不可用。", steamListed: "已在 Steam 服务器列表中", steamMissing: "不在 Steam 服务器列表中", steamChecked: "Steam 列表检查时间",
             diff: { beginner: "新手", normal: "普通", hard: "困难", suicidal: "自杀", hoe: "人间地狱", brutal: "残酷" } },
-      es: { servers: "Nuestros servidores", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.",
+      es: { servers: "Nuestros servidores", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.", steamListed: "En la lista de servidores de Steam", steamMissing: "No aparece en la lista de Steam", steamChecked: "Lista de Steam comprobada a las",
             diff: { beginner: "Principiante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Infierno en la Tierra", brutal: "Brutal" } },
-      pt: { servers: "Nossos servidores", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.",
+      pt: { servers: "Nossos servidores", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.", steamListed: "Na lista de servidores do Steam", steamMissing: "Fora da lista de servidores do Steam", steamChecked: "Lista do Steam verificada às",
             diff: { beginner: "Iniciante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Inferno na Terra", brutal: "Brutal" } }
     };
     Object.keys(SRV_I18N).forEach((l) => { I18N[l].servers = SRV_I18N[l].servers; });
 
     // Server monitor: /api/stats/servers every 10 s; cards are built once and
-    // updated in place so an open player list stays open.
+    // updated in place so an open player list stays open. The Steam listing
+    // tag comes from the server's own 10-minute poll, not from this request.
     const SERVERS_URL = "/api/stats/servers";
     const SERVERS_EVERY_MS = 10000;
     let serversData = null;
@@ -514,6 +517,14 @@
       const meta = card.querySelector(".server-meta");
       meta.textContent = "";
       if (stale) meta.appendChild(el("span", "status", hasMap ? srvText("stale") : srvText("offline")));
+      // Steam listing: polled server-side every 10 min, so this lags the live data.
+      const steam = srv.steam;
+      if (steam && steam.checked) {
+        const listed = !!steam.listed;
+        const tag = el("span", "steam " + (listed ? "ok" : "bad"), srvText(listed ? "steamListed" : "steamMissing"));
+        tag.title = srvText("steamChecked") + " " + new Date(steam.checked * 1000).toLocaleTimeString();
+        meta.appendChild(tag);
+      }
       const join = card.querySelector("a.join");
       join.href = srv.steam || ("steam://run/1250//" + srv.host + ":" + srv.port);
       join.textContent = srvText("join");

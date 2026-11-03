@@ -38,7 +38,7 @@ from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
+from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse
 
 HOST = os.environ.get("STATS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STATS_PORT", "8765"))
@@ -66,6 +66,20 @@ SERVER_LABELS = {
 PUBLIC_HOST = os.environ.get("KFM_PUBLIC_HOST") or os.environ.get("SITE_IP") or "85.192.30.108"
 MAX_PLAYERS = 6
 KF_APP_ID = 1250
+# Steam listing check: is each panel server in the list Steam hands to the
+# in-game and Steam-client browsers (IGameServersService/GetServerList)? One
+# request per STEAM_POLL_SEC for the whole host, never on demand: the Web API
+# key is the user's and its daily budget is shared with everything else. The
+# master lists a slot under its Steam query port, 28852 plus the game port's
+# offset from 7707 (7717 -> 28862); a closed port there is what hid the
+# servers on 2026-10-22 and again after the 2026-11-02 reboot.
+STEAM_WEB_API_URL = "https://api.steampowered.com/IGameServersService/GetServerList/v1/"
+STEAM_POLL_SEC = 600
+STEAM_BASE_QUERY_PORT = 28852
+STEAM_BASE_GAME_PORT = 7707
+_STEAM_LOCK = threading.Lock()
+# ts/ok/error of the last poll; listed: slot -> {"listed", "queryPort", ...}.
+_STEAM: dict[str, Any] = {"ts": 0, "ok": False, "error": "", "listed": {}}
 # Legacy short name from before per-slot StatsServerName — drop from UI and aggregates.
 IGNORED_SERVERS = frozenset({"beta"})
 # Retired slot ids. DB rows, pid files and logs under them belong to the renamed
@@ -824,9 +838,98 @@ def build_public_servers() -> dict[str, Any]:
                 "players": players,
                 "stale": bool(live.get("stale")),
                 "updated": int(live.get("ts") or 0),
+                "steam": steam_listing_for(slot),
             }
         )
-    return {"ts": now_ts(), "servers": out}
+    with _STEAM_LOCK:
+        steam_checked = int(_STEAM.get("ts") or 0)
+        steam_error = str(_STEAM.get("error") or "")
+    return {"ts": now_ts(), "servers": out, "steamChecked": steam_checked, "steamError": steam_error}
+
+
+def steam_api_key() -> str:
+    """Read at call time: load_env_files() runs after import on a manual start."""
+    return (os.environ.get("STEAM_WEB_API_KEY") or "").strip()
+
+
+def steam_query_port(slot: str) -> int:
+    port = SLOT_PORTS.get(slot, (0, 0))[0]
+    return STEAM_BASE_QUERY_PORT + (port - STEAM_BASE_GAME_PORT) if port else 0
+
+
+def fetch_steam_listing() -> dict[str, dict[str, Any]]:
+    """One GetServerList call filtered to this host; slot -> listing entry."""
+    key = steam_api_key()
+    if not key:
+        raise RuntimeError("STEAM_WEB_API_KEY unset")
+    query = urlencode(
+        {"key": key, "filter": f"\\appid\\{KF_APP_ID}\\addr\\{PUBLIC_HOST}", "limit": 50}
+    )
+    req = urllib.request.Request(
+        f"{STEAM_WEB_API_URL}?{query}", headers={"User-Agent": "kfm-stats/1.0"}
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read(262144).decode("utf-8", "replace"))
+    by_port: dict[int, dict[str, Any]] = {}
+    for srv in (data.get("response") or {}).get("servers") or []:
+        try:
+            game_port = int(srv.get("gameport") or 0)
+        except (TypeError, ValueError):
+            continue
+        by_port[game_port] = {
+            "addr": str(srv.get("addr") or "")[:32],
+            "name": str(srv.get("name") or "")[:96],
+            "map": str(srv.get("map") or "")[:64],
+            "players": int(srv.get("players") or 0),
+            "maxPlayers": int(srv.get("max_players") or 0),
+            "bots": int(srv.get("bots") or 0),
+            "secure": bool(srv.get("secure")),
+        }
+    listed: dict[str, dict[str, Any]] = {}
+    for slot in PANEL_SERVERS:
+        hit = by_port.get(SLOT_PORTS.get(slot, (0, 0))[0])
+        entry: dict[str, Any] = {"listed": hit is not None, "queryPort": steam_query_port(slot)}
+        if hit:
+            entry.update(hit)
+        listed[slot] = entry
+    return listed
+
+
+def steam_listing_for(slot: str) -> dict[str, Any] | None:
+    """Last poll result for one slot, or None before the first successful poll."""
+    with _STEAM_LOCK:
+        ts = int(_STEAM.get("ts") or 0)
+        entry = _STEAM.get("listed", {}).get(slot)
+    if not ts or entry is None:
+        return None
+    out = dict(entry)
+    out["checked"] = ts
+    return out
+
+
+def steam_poll_loop() -> None:
+    """Every STEAM_POLL_SEC, never sooner: an error keeps the last result and
+    waits the full interval, so a Steam outage cannot burn the key's budget."""
+    prev_listed: dict[str, bool] | None = None
+    while True:
+        try:
+            listed = fetch_steam_listing()
+            with _STEAM_LOCK:
+                _STEAM.update({"ts": now_ts(), "ok": True, "error": "", "listed": listed})
+            now_listed = {slot: bool(v.get("listed")) for slot, v in listed.items()}
+            if now_listed != prev_listed:
+                missing = [slot for slot, ok in now_listed.items() if not ok]
+                print(
+                    "steam list: " + ("all panel servers listed" if not missing else "missing " + ", ".join(missing)),
+                    flush=True,
+                )
+            prev_listed = now_listed
+        except Exception as exc:  # noqa: BLE001
+            with _STEAM_LOCK:
+                _STEAM["ok"] = False
+                _STEAM["error"] = str(exc)[:200]
+            print(f"steam list failed: {exc}", flush=True)
+        time.sleep(STEAM_POLL_SEC)
 
 
 def mysql_cfg() -> dict[str, Any]:
@@ -2770,7 +2873,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/stats/admin/status":
             with _ADMIN_LOCK:
                 busy = dict(_ADMIN_BUSY)
-            self._send(200, {"busy": busy.get("op"), "started": busy.get("started") or 0})
+            with _STEAM_LOCK:
+                steam = {
+                    "checked": int(_STEAM.get("ts") or 0),
+                    "ok": bool(_STEAM.get("ok")),
+                    "error": str(_STEAM.get("error") or ""),
+                    "listed": {k: dict(v) for k, v in _STEAM.get("listed", {}).items()},
+                    "pollSec": STEAM_POLL_SEC,
+                }
+            self._send(
+                200,
+                {"busy": busy.get("op"), "started": busy.get("started") or 0, "steam": steam},
+            )
             return
         self._send(404, {"error": "not found"})
 
@@ -2903,6 +3017,10 @@ def main() -> None:
     Handler.con = con
     threading.Thread(target=udp_ingest_loop, args=(con,), name="stats-udp", daemon=True).start()
     threading.Thread(target=load_sampler_loop, name="stats-load", daemon=True).start()
+    if steam_api_key():
+        threading.Thread(target=steam_poll_loop, name="stats-steam", daemon=True).start()
+    else:
+        print("WARN: STEAM_WEB_API_KEY unset — Steam listing check off", flush=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     cfg = mysql_cfg()
     print(
