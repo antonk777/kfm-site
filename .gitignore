@@ -11,3 +11,10 @@ kfm-site.env
 *.sqlite-*
 __pycache__/
 *.pyc
+
+# New Vue site (built with Vite; node_modules/data/cache are dev-only).
+web/node_modules/
+web/dist/
+web/data/
+web/.cache/
+web/.env

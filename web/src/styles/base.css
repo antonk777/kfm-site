@@ -1,0 +1,128 @@
+/* KF-Maniacs — global base. Theme variables, page shell, scrollbars and the
+   few primitives shared by several views. Everything else lives in scoped
+   component styles. Palette: near-black panels, blood red (#c61217, the old
+   hub red), prestige gold, bone text. */
+
+:root {
+  --bg: #0a0a0c;
+  --bg-2: #0f0f13;
+  --panel: #141419;
+  --panel-2: #191920;
+  --border: #2b2b34;
+  --border-bright: #3d3d49;
+  --text: #d8d2c4;
+  --text-dim: #8f8b80;
+  --text-faint: #5f5c54;
+  --accent: #c61217;
+  --accent-bright: #e0282d;
+  --accent-deep: #6d0a0d;
+  --gold: #c78b12;
+  --gold-bright: #e8b53c;
+  --green: #8fd16a;
+  --blue: #5cc8e6;
+  /* Bebas Neue covers Latin only; Oswald (self-hosted, Latin+Cyrillic) takes
+     over for Russian, and system CJK fonts for Chinese. Fallback works
+     per-glyph, so one stack serves all five site languages. */
+  --font-display: "Bebas Neue", "Oswald", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Arial Narrow", sans-serif;
+  --font-body: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+/* No horizontal scroll: anything that would overflow is clipped, not scrolled. */
+html { overflow-x: clip; }
+body {
+  overflow-x: clip;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 var(--font-body);
+  min-height: 100vh;
+}
+
+/* Thin, dark scrollbars (Firefox + WebKit/Blink). */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #34343e #0a0a0c;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0a0a0c; }
+::-webkit-scrollbar-thumb {
+  background: #2e2e38;
+  border-radius: 4px;
+  border: 2px solid #0a0a0c;
+}
+::-webkit-scrollbar-thumb:hover { background: #3f3f4b; }
+
+/* Grunge noise + red vignette, KF-menu style. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.05'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1000px 500px at 85% -10%, rgba(198, 18, 23, 0.14), transparent 60%),
+    radial-gradient(900px 460px at -10% 110%, rgba(198, 18, 23, 0.10), transparent 60%),
+    linear-gradient(rgba(0, 0, 0, 0.25), transparent 180px);
+}
+
+#app { position: relative; z-index: 1; }
+
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- primitives shared by the views ---------- */
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 26px 20px 60px;
+}
+
+@media (max-width: 640px) {
+  .page { padding: 16px 10px 48px; }
+}
+
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 34px 0 16px;
+  font-family: var(--font-display);
+  font-size: 26px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #efe9db;
+}
+.section-title::before {
+  content: "";
+  width: 6px;
+  height: 22px;
+  align-self: center;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(198, 18, 23, 0.7);
+}
+.section-title .count { color: var(--text-faint); font-size: 18px; letter-spacing: 0.06em; }
+
+.panel {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.empty-note { color: var(--text-faint); font-size: 13.5px; padding: 6px 2px; }

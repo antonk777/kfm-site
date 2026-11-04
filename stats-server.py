@@ -2907,6 +2907,675 @@ AVATAR_ROUTES = {
 }
 
 
+# Achievements shown on the player pages (PerksClientRepLinkNew defaults).
+ACHIEVEMENTS: list[tuple[int, str, str, int]] = [
+    (0, "The L.A.W. That Broke The Camel's Back", 'Deliver the Killing Blow to The Patriarch with a L.A.W. Rocket.', 1),
+    (1, 'Experimentilottacide', 'Kill 10,000 Specimens.', 10000),
+    (2, 'Death To The Mad Scientist', 'Defeat the Patriarch', 1),
+    (3, 'Too Close for Comfort', 'Finish off the Fleshpound using a Melee Attack.', 1),
+    (4, "It's Not Easy Being Greasy", 'Cause 100 Specimens to Die by Luring them into Bloat Acid.', 500),
+    (5, 'Philantrophist', 'Give 100,000 Pounds to Teammates who have 50% of Your Cash or Less.', 100000),
+    (6, 'Straight Rush', 'Kill the Patriarch Before he has a Chance to Heal.', 1),
+    (7, 'Social Outburst', 'Kill 8 Specimens with One Grenade.', 1),
+    (8, 'Dignity for the Dead', 'Kill the Specimen Feeding on Dead Teammates Corpses.', 1),
+    (9, 'Pound This', 'Kill 10 Fleshpounds with the AA12', 10),
+    (10, 'Experimentimillicide', 'Kill 1,000 Specimens. Needs to register in global statistics.', 1000),
+    (11, 'Experimenticenticide', 'Kill 100 Specimens.', 100),
+    (12, "Homer's Heroes", 'Kill 100 Sirens.', 100),
+    (13, 'Fascist Dietitian', 'Kill 200 Bloats.', 200),
+    (14, 'Keep Those Sneakers Off The Floor!', 'Kill 20 Stalkers with Explosives.', 20),
+    (15, 'Hot cross Fun', 'Kill 25 Burning Specimens with a Crossbow.', 25),
+    (16, 'Careful Spender', 'Kill 4 Specimens with a Single Shot from a Hunting Shotgun.', 1),
+    (17, "It's What's Inside That Counts", 'Turn 500 Specimens into Giblets.', 500),
+    (18, 'Quarter Pounder With Ease', 'Turn 5 Fleshpounds into Giblets.', 5),
+    (19, 'Self Medicator', 'Use Siringe on Yourself 100 Times.', 100),
+    (20, 'Thin-Ice Pirouette', 'Complete 10 Waves when the Rest of your Team has Died.', 10),
+    (21, 'I Like To Watch', "Aquire 5 minutes of 'Zed-Time'.", 5),
+    (22, 'Mr. Perky', 'Get All of your Perks up to Level 6', 7),
+    (23, 'Explosive Personality', 'As Demolitions, kill 1000 Specimens with the Pipebomb.', 1000),
+    (24, 'Flaming Hell, That Was Close', 'As Firebug, kill 5 Husks with the Flamethrower Before he hurts Anyone.', 5),
+    (25, 'Merry Men', 'Kill the Patriarch when everyone is ONLY using Crossbows.', 1),
+    (26, 'Blooper Reel', 'Turn 500 Zeds into Giblets using the M79.', 500),
+    (27, "SCAR'd", 'Kill 1000 Specimens with the SCAR.', 1000),
+    (28, 'Healing Touch', "Heal 200 Teammates with the MP7's medication dart.", 200),
+    (29, 'Killer Junior', 'Kill 20 Crawlers in mid-air with the M79.', 20),
+    (30, 'Getting Chunky', 'Obliterate 10 Zeds at once with the Pipebomb.', 10),
+    (31, 'Random Axe of Kindness', 'Kill 15 Specimens with a Fire Axe in a Single Wave', 1),
+    (32, 'Bitter Irony', 'Kill 2 Scrakes with a Chainsaw', 1),
+    (33, 'Master Surgeon', 'As a Medic, Kill 8 Specimens using a Knife in a single Wave.', 1),
+    (34, 'Dot of Doom', 'Get 10 Headshots in a Row with the EBR while using the Laser Sight.', 1),
+    (35, 'Mr. true Maniac', 'Get All of your Perks up to Level 7.', 7),
+    (36, 'Let Them Burn', 'Get 1000 points of burn damage with the MAC-10.', 1000),
+    (37, 'Merry Friggin Christmas', 'Kill the Christmas Patriarch.', 1),
+    (38, 'Tis Better to Give than to Receive', 'Drop 3 Tier 3 weapons for others (with which they kill at least one Christmas Zed).', 3),
+    (39, "Deck the Halls with Buckets o' Blood", 'Kill 3 Christmas Zeds in ZED time chain with a Melee weapon in a single Wave.', 1),
+    (40, 'Who Brings a Gun to a Snow Ball Fight?', 'Kill a Christmas Husk with any Pistol.', 1),
+    (41, 'Eggnog Anyone?', 'Get covered in Christmas Bloat Bile and live for 10 seconds.', 1),
+    (42, 'Back to Work', 'Kill 20 Christmas Clots in one wave.', 1),
+    (43, 'Fending off Mrs. Claws', 'Kill 3 Christmas Stalkers with a Lever Action Rifle without reloading.', 1),
+    (44, 'Not So Silent Night', 'Kill a Christmas Siren with an undetonated LAW rocket', 1),
+    (45, 'Cracked the Nutcracker!', 'Land the killing blow on a Christmas Fleshpound with a Knife or Machete.', 1),
+    (46, "Can't catch Me!", 'Kill 2 Christmas Gorefasts with a Melee weapon from behind in one wave.', 1),
+    (47, 'Toasted Jack Frost', 'Kill the Christmas Scrake with a Fire-based weapon.', 1),
+    (48, 'Rudolph, the Bloody Nosed Reindeer', 'Kill a Christmas Crawler with a Crossbow.', 1),
+    (49, "That's not Santa!", 'Kill 3 Christmas Bloats with the Bullpup in one wave.', 1),
+    (50, 'Bad Santa', 'Unlock 10 of the 13 Christmas Achievements.', 10),
+    (51, 'Jr. Steam Achievement Collector', 'Unlock 25 of the 36 Steam Achievements. (except for christmas ones)', 25),
+    (52, 'Mr. Steam Achievement Collector', 'Unlock 33 of the 36 Steam Achievements. (except for christmas ones)', 33),
+    (53, 'Hellish Pub Crawl', 'Win a Game on West London.', 1),
+    (54, 'Demonic King of the Manor', 'Win a Game on Manor.', 1),
+    (55, 'Demon Farmer', 'Win a Game on Farm.', 1),
+    (56, 'Boss from Hell', 'Win a Game on Offices.', 1),
+    (57, 'Scientist from Hell', 'Win a Game on Biotics Lab.', 1),
+    (58, 'Diablo Steel Man', 'Win a Game on Foundry.', 1),
+    (59, 'Commit-ed for life', 'Win a Game on Bedlam.', 1),
+    (60, 'Wolf King of the Dark Forest', 'Win a Game on Wyre.', 1),
+    (61, 'Wasted', 'Win a Game on Biohazard.', 1),
+    (62, 'Warehouse Manager', 'Win a Game on Crash.', 1),
+    (63, 'Dear Departed', 'Win a Game on Departed.', 1),
+    (64, 'Pile Up', "Win a Game on Filth's Cross.", 1),
+    (65, 'Not Dead Yet!', 'Win a Game on Hospital Horrors.', 1),
+    (66, 'Comet', 'Win a Game on Icebreaker.', 1),
+    (67, 'Park Ranger', 'Win a Game on Mountain Pass.', 1),
+    (68, 'SWAT', 'Win a Game on Suburbia.', 1),
+    (69, 'Floodgate to Hell', 'Win a Game on Waterworks.', 1),
+    (70, 'Grandma got Eaten by a Reindeer', "Win a Game on Santa's Evil Lair.", 1),
+    (71, 'Piece of Cake', 'Complete 2 of the 18 standart map achievements.', 2),
+    (72, 'Pound Cake', 'Complete 5 of the 18 standart map achievements.', 5),
+    (73, 'Fruit Cake', 'Complete 10 of the 18 standart map achievements.', 10),
+    (74, 'Devil Cake', 'Complete 15 of the 18 standart map achievements.', 15),
+    (75, 'Man Of Prestige', 'Have 1 prestige perk.', 1),
+    (76, 'Killing Floor Veteran', 'Have 3 prestige perks.', 3),
+    (77, 'True Maniac', 'Have all prestige perks.', 7),
+]
+
+
+# ---------------------------------------------------------------------------
+# Player pages for the Vue app (/players, /players/<id>).
+# JSON contract: web/src/api.ts PlayerPayload. An <id> is a SteamID64 or the
+# old KFM account id; a Steam custom URL resolves to SteamID64 first.
+# ---------------------------------------------------------------------------
+
+STATS_COLUMNS = (
+    "DamageHealed", "WeldingPoints", "ShotgunDamage", "HeadshotKills",
+    "StalkerKills", "BullpupDamage", "MeleeDamage", "FlameThrowerDamage",
+    "SelfHeals", "SoleSurvivorWaves", "CashDonated", "FeedingKills",
+    "BurningCrossbowKills", "GibbedFleshpounds", "StalkersKilledWithExplosives",
+    "GibbedEnemies", "BloatKills", "SirenKills", "Kills", "ExplosivesDamage",
+    "TotalZedTime",
+)
+
+# perk index -> (perk id, [stat column index...], [[thresholds 0..9] ...])
+# Thresholds are KFStatsNew.Get*Req; two-stat perks are Support and Commando.
+_SHOTGUN = [25000, 100000, 200000, 500000, 3500000, 5500000, 10000000, 15000000, 25000000, 25000000]
+PERK_THRESHOLDS: tuple[tuple[int, str, tuple[int, ...], tuple[tuple[int, ...], ...]], ...] = (
+    (0, "Field_Medic", (0,), ([200, 1000, 2000, 4000, 25000, 100000, 200000, 300000, 400000, 400000],)),
+    (1, "Support_Specialist", (1, 2), ([2000, 7000, 15000, 30000, 250000, 370000, 500000, 750000, 1000000, 1000000], tuple(_SHOTGUN))),
+    (2, "Sharpshooter", (3,), ([30, 100, 500, 1000, 5500, 8500, 15000, 25000, 40000, 40000],)),
+    (3, "Commando", (4, 5), ([30, 100, 200, 350, 2400, 3600, 5000, 7000, 10000, 10000], tuple(_SHOTGUN))),
+    (4, "Berserker", (6,), (tuple(_SHOTGUN),)),
+    (5, "Firebug", (7,), (tuple(_SHOTGUN),)),
+    (6, "Demolition", (19,), (tuple(_SHOTGUN),)),
+)
+
+# PrestigeStoreNew.BaselineSlot(perk, stat slot) -> baseline slot 0..8, and
+# which prestige row (perk, a|b) holds each slot (perkhost PERK_BASELINE_SLOTS).
+_PERK_BASELINE_SLOT = ((0,), (1, 2), (3,), (4, 5), (6,), (7,), (8,))
+_BASELINE_SLOT_PERK = ((0, "a"), (1, "a"), (1, "b"), (2, "a"), (3, "a"), (3, "b"), (4, "a"), (5, "a"), (6, "a"))
+
+_ERA_START = "2026-01-01"
+_PLAYER_SERVER_LABELS = {
+    "meatgrinder": "Meat Grinder",
+    "hard": "Hard",
+    "suicidal": "Suicidal",
+    "bloodbath": "Bloodbath",
+}
+_BROKEN_NAME = re.compile(r"[\x00-\x1f\x7f]")
+_STEAM_KEY = lambda: (os.environ.get("STEAM_WEB_API_KEY") or "").strip()
+
+# Names the Linux server mangled before SteamNameFixNew.Wire() (every char past
+# U+00FF became 0x7F) are unrecoverable: fall back to the Steam persona name.
+_STEAM_SUMMARIES: dict[str, tuple[float, str, str]] = {}
+_STEAM_LOCK = threading.Lock()
+_STEAM_TTL = 3600
+
+
+def _site_path(env: str, default: str) -> Path:
+    base = os.environ.get("SITE_ROOT") or "/var/www/kfm.manul.lol"
+    return Path(os.environ.get(env) or os.path.join(base, default))
+
+
+def _maps_dir() -> Path:
+    return _site_path("KFM_MAPS_DIR", "maps")
+
+
+def _skins_dir() -> Path:
+    return _site_path("KFM_SKINS_DIR", os.path.join("assets", "skins"))
+
+
+def _dt_unix(value: Any) -> int | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace(" ", "T"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _steam_summaries(steam_ids: list[str]) -> dict[str, dict[str, str]]:
+    """Persona names and custom-URL names for the given SteamID64s (1 h cache)."""
+    out: dict[str, dict[str, str]] = {}
+    now = time.time()
+    missing: list[str] = []
+    with _STEAM_LOCK:
+        for sid in steam_ids:
+            hit = _STEAM_SUMMARIES.get(sid)
+            if hit and now - hit[0] < _STEAM_TTL:
+                out[sid] = {"name": hit[1], "vanity": hit[2]}
+            else:
+                missing.append(sid)
+    key = _STEAM_KEY()
+    if not missing or not key:
+        return out
+    for i in range(0, len(missing), 100):
+        chunk = missing[i : i + 100]
+        try:
+            url = (
+                "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
+                f"?key={urllib.parse.quote(key)}&steamids={','.join(chunk)}"
+            )
+            payload = json.loads(_http_get(url, 512_000).decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"player steam summaries: {exc}", flush=True)
+            continue
+        players = (payload.get("response") or {}).get("players") or []
+        with _STEAM_LOCK:
+            for p in players:
+                sid = str(p.get("steamid") or "")
+                name = str(p.get("personaname") or "")
+                if not sid or not name:
+                    continue
+                profile = str(p.get("profileurl") or "")
+                m = re.search(r"/id/([A-Za-z0-9_-]{2,32})/?(?:$|[?#])", profile)
+                vanity = m.group(1) if m else ""
+                _STEAM_SUMMARIES[sid] = (time.time(), name, vanity)
+                out[sid] = {"name": name, "vanity": vanity}
+    return out
+
+
+def _resolve_vanity(name: str) -> str:
+    """Steam custom URL -> SteamID64 ("" when unknown/unavailable)."""
+    key = _STEAM_KEY()
+    if not key or not re.fullmatch(r"[A-Za-z0-9_-]{2,32}", name or ""):
+        return ""
+    try:
+        url = (
+            "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/"
+            f"?key={urllib.parse.quote(key)}&vanityurl={urllib.parse.quote(name)}"
+        )
+        payload = json.loads(_http_get(url, 16_384).decode("utf-8", "replace"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"player resolve vanity: {exc}", flush=True)
+        return ""
+    resp = payload.get("response") or {}
+    if int(resp.get("success") or 0) != 1:
+        return ""
+    return str(resp.get("steamid") or "")
+
+
+def _query(con, sql: str, params: tuple[Any, ...] = ()):
+    """One query against the shared connection; reopens it after a timeout."""
+    with LOCK:
+        ensure_db(con)
+        cur = con.cursor()
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def _query_one(con, sql: str, params: tuple[Any, ...] = ()):
+    rows = _query(con, sql, params)
+    return rows[0] if rows else None
+
+
+def _find_player_row(con, ident: str):
+    ident = (ident or "").strip()
+    if not ident:
+        return None
+    if _STEAM_ID_RE.fullmatch(ident):
+        return _query_one(con, "SELECT * FROM `players` WHERE `steam_id`=%s LIMIT 1", (ident,))
+    try:
+        account_id = int(ident)
+    except ValueError:
+        return None
+    if account_id <= 0:
+        return None
+    return _query_one(con, "SELECT * FROM `players` WHERE `id`=%s LIMIT 1", (account_id,))
+
+
+def _prestige_rows(con, account_id: int) -> dict[int, dict[str, Any]]:
+    rows = _query(
+        con,
+        "SELECT `perk`, `rank`, `baseline_a`, `baseline_b`, `prestiged_at` FROM `prestige` WHERE `account_id`=%s",
+        (account_id,),
+    )
+    out: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        perk = int(r.get("perk") or 0)
+        if 0 <= perk <= 6:
+            out[perk] = r
+    return out
+
+
+def _baselines(prestige: dict[int, dict[str, Any]]) -> list[int]:
+    out = [0] * 9
+    for slot, (perk, col) in enumerate(_BASELINE_SLOT_PERK):
+        row = prestige.get(perk)
+        if not row:
+            continue
+        out[slot] = int(row.get("baseline_" + col) or 0)
+    return out
+
+
+def _perk_level(perk_idx: int, cur: list[int]) -> int:
+    _, _, _, reqs = PERK_THRESHOLDS[perk_idx]
+    n = len(reqs)
+    for lvl in range(9):
+        total = 0.0
+        for i in range(n):
+            c = cur[i]
+            last = reqs[i][lvl - 1] if lvl > 0 else 0
+            req = reqs[i][lvl]
+            if last >= c:
+                last = 0
+            if req <= last:
+                if c >= req:
+                    total += 1.0
+                continue
+            p = (c - last) / float(req - last)
+            total += 1.0 if p > 1 else (0.0 if p < 0 else p)
+        if total / n < 1.0:
+            return lvl
+    return 9
+
+
+def _perk_progress(perk_idx: int, level: int, cur: list[int]) -> float:
+    _, _, _, reqs = PERK_THRESHOLDS[perk_idx]
+    n = len(reqs)
+    if level >= 9:
+        return 1.0
+    total = 0.0
+    for i in range(n):
+        c = cur[i]
+        last = reqs[i][level - 1] if level > 0 else 0
+        req = reqs[i][level]
+        if last >= c:
+            last = 0
+        if req <= last:
+            total += 1.0
+            continue
+        p = (c - last) / float(req - last)
+        total += 1.0 if p > 1 else (0.0 if p < 0 else p)
+    return total / n
+
+
+def _server_label(raw: Any) -> str:
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    canon = SERVER_ALIASES.get(s, s)
+    return _PLAYER_SERVER_LABELS.get(canon, canon)
+
+
+def _achievement_rows(con, account_id: int) -> dict[int, int]:
+    rows = _query(
+        con,
+        "SELECT `ach_index`, `progress` FROM `achievements` WHERE `account_id`=%s",
+        (account_id,),
+    )
+    return {int(r.get("ach_index") or 0): int(r.get("progress") or 0) for r in rows}
+
+
+def _active_ban(con, account_id: int):
+    return _query_one(
+        con,
+        """
+        SELECT `reason`, `until_at`, `admin_name` FROM `bans`
+        WHERE `account_id`=%s AND `active`=1
+          AND (`until_at` IS NULL OR `until_at` > NOW())
+        ORDER BY `banned_at` DESC LIMIT 1
+        """,
+        (account_id,),
+    )
+
+
+def _player_rank(con, score: int, account_id: int) -> int | None:
+    if score <= 0:
+        return None
+    row = _query_one(
+        con,
+        f"""
+        SELECT COUNT(*) AS `n` FROM `players`
+        WHERE `last_time_joined` >= '{_ERA_START}' AND `score` > 0
+          AND (`score` > %s OR (`score` = %s AND `id` < %s))
+        """,
+        (score, score, account_id),
+    )
+    return int(row.get("n") or 0) + 1 if row else None
+
+
+def _ranked_players(con) -> int:
+    row = _query_one(
+        con,
+        f"SELECT COUNT(*) AS `n` FROM `players` WHERE `last_time_joined` >= '{_ERA_START}' AND `score` > 0",
+    )
+    return int(row.get("n") or 0) if row else 0
+
+
+def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    if not steam_id:
+        return []
+    rows = _query(
+        con,
+        """
+        SELECT sp.`joined_at`, sp.`max_wave`, sp.`join_wave`, sp.`perk_name`,
+               sp.`outcome` AS `sp_outcome`,
+               ms.`map_name`, ms.`started_at`, ms.`ended_at`, ms.`duration_sec`,
+               ms.`outcome`, ms.`wave`, ms.`final_wave`, ms.`difficulty`, ms.`server_name`
+        FROM `site_session_players` sp
+        JOIN `site_map_sessions` ms ON ms.`id` = sp.`session_id`
+        WHERE sp.`steam_id`=%s
+        ORDER BY ms.`started_at` DESC LIMIT %s
+        """,
+        (steam_id, limit),
+    )
+    maps_dir = _maps_dir()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        map_name = str(r.get("map_name") or "")
+        key = map_name.lower()
+        out.append(
+            {
+                "map": key,
+                "mapPretty": map_name[3:] if map_name.upper().startswith("KF-") else map_name,
+                "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
+                "startedAt": int(r.get("started_at") or 0),
+                "endedAt": int(r.get("ended_at") or 0),
+                "durationSec": int(r.get("duration_sec") or 0),
+                "outcome": str(r.get("sp_outcome") or r.get("outcome") or ""),
+                "wave": int(r.get("wave") or 0),
+                "finalWave": int(r.get("final_wave") or 0),
+                "difficulty": float(r.get("difficulty") or 0),
+                "server": _server_label(r.get("server_name")),
+                "perk": str(r.get("perk_name") or ""),
+                "joinedAt": int(r.get("joined_at") or 0),
+                "maxWave": int(r.get("max_wave") or 0),
+                "joinWave": int(r.get("join_wave") or 0),
+            }
+        )
+    return out
+
+
+def _player_clears(con, steam_id: str) -> list[dict[str, Any]]:
+    if not steam_id:
+        return []
+    rows = _query(
+        con,
+        """
+        SELECT `map_name`, `clear_count`, `last_cleared_at` FROM `site_player_map_clears`
+        WHERE `steam_id`=%s AND `clear_count`>0
+        ORDER BY `clear_count` DESC, `map_name`
+        """,
+        (steam_id,),
+    )
+    maps_dir = _maps_dir()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        map_name = str(r.get("map_name") or "")
+        key = map_name.lower()
+        out.append(
+            {
+                "map": key,
+                "mapPretty": map_name[3:] if map_name.upper().startswith("KF-") else map_name,
+                "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
+                "count": int(r.get("clear_count") or 0),
+                "lastAt": int(r.get("last_cleared_at") or 0),
+            }
+        )
+    return out
+
+
+def _player_achievements(con, account_id: int) -> dict[str, Any]:
+    have = _achievement_rows(con, account_id)
+    items: list[dict[str, Any]] = []
+    completed = 0
+    for idx, name, desc, den in ACHIEVEMENTS:
+        progress = int(have.get(idx, 0))
+        done = den > 0 and progress >= den
+        if done:
+            completed += 1
+        items.append(
+            {
+                "index": idx,
+                "name": name,
+                "desc": desc,
+                "den": den,
+                "progress": progress,
+                "completed": done,
+            }
+        )
+    return {"total": len(ACHIEVEMENTS), "completed": completed, "list": items}
+
+
+def _player_perks(row: dict[str, Any], prestige: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    baselines = _baselines(prestige)
+    out: list[dict[str, Any]] = []
+    for perk_idx, perk_id, stat_idx, reqs in PERK_THRESHOLDS:
+        prow = prestige.get(perk_idx)
+        rank = int(prow.get("rank") or 0) if prow else 0
+        cur: list[int] = []
+        for slot, col in enumerate(stat_idx):
+            raw = int(row.get(STATS_COLUMNS[col]) or 0)
+            if rank > 0:
+                base = baselines[_PERK_BASELINE_SLOT[perk_idx][slot]]
+                raw = max(0, raw - base)
+            cur.append(raw)
+        level = _perk_level(perk_idx, cur)
+        progress = _perk_progress(perk_idx, level, cur)
+        stats: list[dict[str, Any]] = []
+        for slot, col in enumerate(stat_idx):
+            last_req = reqs[slot][level - 1] if level > 0 else 0
+            req = reqs[slot][level]
+            c = cur[slot]
+            last = 0 if last_req >= c else last_req
+            if req <= last:
+                last = req
+            frac = 1.0 if req <= 0 else max(0.0, min(1.0, (c - last) / float(max(1, req - last))))
+            stats.append(
+                {
+                    "key": STATS_COLUMNS[col],
+                    "value": int(row.get(STATS_COLUMNS[col]) or 0),
+                    "effective": c,
+                    "lastReq": last_req,
+                    "req": req,
+                    "progress": frac,
+                }
+            )
+        out.append(
+            {
+                "index": perk_idx,
+                "id": perk_id,
+                "level": level,
+                "progress": progress,
+                "prestigeRank": rank,
+                "prestigeSince": (str(prow.get("prestiged_at") or "") or None) if prow else None,
+                "stats": stats,
+            }
+        )
+    return out
+
+
+def _clean_player_name(raw: Any, info: dict[str, str]) -> str:
+    name = str(raw or "").lstrip("_").strip() or "(nameless)"
+    if _BROKEN_NAME.search(name) and info.get("name"):
+        name = info["name"]
+    return re.sub(r"[\x00-\x1f\x7f]", "", name).strip() or "(unknown)"
+
+
+def build_player_payload(con, ident: str) -> dict[str, Any]:
+    row = _find_player_row(con, ident)
+    if not row:
+        return {
+            "found": False,
+            "id": 0,
+            "steamId": "",
+            "vanity": None,
+            "name": "",
+            "skinName": "",
+            "hasSkin": False,
+            "clan": None,
+            "country": "",
+            "admin": False,
+            "veteran": False,
+            "steamUser": False,
+            "dateCreated": None,
+            "lastJoined": None,
+            "score": 0,
+            "rank": None,
+            "rankedPlayers": 0,
+            "stats": [],
+            "perks": [],
+            "achievements": {"total": len(ACHIEVEMENTS), "completed": 0, "list": []},
+            "ban": None,
+            "sessions": [],
+            "clears": [],
+        }
+    account_id = int(row.get("id") or 0)
+    steam_id = str(row.get("steam_id") or "").strip()
+    prestige = _prestige_rows(con, account_id)
+    info: dict[str, str] = {}
+    if _STEAM_ID_RE.fullmatch(steam_id):
+        info = _steam_summaries([steam_id]).get(steam_id) or {}
+    name = _clean_player_name(row.get("last_player_name"), info)
+    skin_name = str(row.get("last_skin_name") or "").strip()
+    clan_name = str(row.get("clan_name") or "").strip()
+    score = int(row.get("score") or 0)
+    date_created = _dt_unix(row.get("date_created"))
+    last_joined = _dt_unix(row.get("last_time_joined"))
+    ban = _active_ban(con, account_id)
+    return {
+        "found": True,
+        "id": account_id,
+        "steamId": steam_id,
+        "vanity": info.get("vanity") or None,
+        "name": name,
+        "skinName": skin_name,
+        "hasSkin": bool(skin_name) and (_skins_dir() / (skin_name + ".png")).is_file(),
+        "clan": {"name": clan_name, "leader": int(row.get("clan_leader") or 0) == 1} if clan_name else None,
+        "country": str(row.get("country") or ""),
+        "admin": int(row.get("admin") or 0) != 0,
+        "veteran": bool(date_created) and date_created < 1767225600,
+        "steamUser": int(row.get("is_steam_user") or 0) != 0,
+        "dateCreated": date_created,
+        "lastJoined": last_joined,
+        "score": score,
+        "rank": _player_rank(con, score, account_id),
+        "rankedPlayers": _ranked_players(con),
+        "stats": [{"key": c, "value": int(row.get(c) or 0)} for c in STATS_COLUMNS],
+        "perks": _player_perks(row, prestige),
+        "achievements": _player_achievements(con, account_id),
+        "ban": {
+            "reason": str(ban.get("reason") or ""),
+            "until": str(ban.get("until_at") or "") or None,
+            "adminName": str(ban.get("admin_name") or ""),
+        }
+        if ban
+        else None,
+        "sessions": _player_sessions(con, steam_id),
+        "clears": _player_clears(con, steam_id),
+    }
+
+
+def build_top_players(con, limit: int) -> list[dict[str, Any]]:
+    limit = max(1, min(200, int(limit or 50)))
+    rows = _query(
+        con,
+        f"""
+        SELECT `id`, `steam_id`, `last_player_name`, `last_skin_name`, `score`, `Kills`,
+               `admin`, `date_created`
+        FROM `players`
+        WHERE `last_time_joined` >= '{_ERA_START}' AND `score` > 0
+        ORDER BY `score` DESC, `id`
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    broken = [str(r.get("steam_id") or "") for r in rows if _BROKEN_NAME.search(str(r.get("last_player_name") or ""))]
+    names = _steam_summaries([s for s in broken if _STEAM_ID_RE.fullmatch(s)]) if broken else {}
+    skins_dir = _skins_dir()
+    out: list[dict[str, Any]] = []
+    for i, r in enumerate(rows):
+        name = _clean_player_name(r.get("last_player_name"), names.get(str(r.get("steam_id") or "")) or {})
+        skin_name = str(r.get("last_skin_name") or "").strip()
+        date_created = _dt_unix(r.get("date_created"))
+        out.append(
+            {
+                "id": int(r.get("id") or 0),
+                "steamId": str(r.get("steam_id") or ""),
+                "name": name,
+                "skinName": skin_name,
+                "hasSkin": bool(skin_name) and (skins_dir / (skin_name + ".png")).is_file(),
+                "score": int(r.get("score") or 0),
+                "kills": int(r.get("Kills") or 0),
+                "rank": i + 1,
+                "admin": int(r.get("admin") or 0) != 0,
+                "veteran": bool(date_created) and date_created < 1767225600,
+            }
+        )
+    return out
+
+
+# Full-size Steam avatar (184 px jpeg) for the player pages, disk cached.
+_FULL_AVATAR_DIR = Path(os.environ.get("KFM_AVATAR_FULL_CACHE", "/var/cache/kfm-avatars-full"))
+
+
+def full_avatar_bytes(steam: str) -> bytes | None:
+    if not _STEAM_ID_RE.fullmatch(steam or ""):
+        return None
+    path = _FULL_AVATAR_DIR / (steam + ".jpg")
+    try:
+        if path.is_file() and time.time() - path.stat().st_mtime < _AVATAR_POS_TTL:
+            return path.read_bytes()
+    except OSError:
+        pass
+    try:
+        xml = _http_get(f"https://steamcommunity.com/profiles/{steam}/?xml=1", 80_000).decode(
+            "utf-8", "replace"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"full avatar profile {steam}: {exc}", flush=True)
+        return None
+    url = _avatar_url(xml)
+    if not url:
+        return None
+    try:
+        blob = _http_get(url, 400_000)
+    except Exception as exc:  # noqa: BLE001
+        print(f"full avatar image {steam}: {exc}", flush=True)
+        return None
+    try:
+        _FULL_AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+    except OSError as exc:
+        print(f"full avatar cache: {exc}", flush=True)
+    return blob
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "KFMStats/1.3"
     con = None  # set in main
@@ -3033,6 +3702,66 @@ class Handler(BaseHTTPRequestHandler):
         # Public: the landing page's Discord card.
         if path == "/api/stats/discord":
             self._send(200, build_public_discord())
+            return
+        # Public: the Vue app's player pages.
+        if path == "/api/stats/top":
+            try:
+                limit = int((qs.get("limit") or ["100"])[0] or 100)
+            except ValueError:
+                limit = 100
+            try:
+                payload = build_top_players(self.con, limit)
+            except Exception as exc:  # noqa: BLE001
+                print(f"top failed: {exc}", flush=True)
+                try:
+                    with LOCK:
+                        ensure_db(self.con)
+                    payload = build_top_players(self.con, limit)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"top retry failed: {exc2}", flush=True)
+                    self._send(500, {"error": "database unavailable"})
+                    return
+            self._send(200, payload)
+            return
+        if path.startswith("/api/stats/player/"):
+            ident = unquote(path[len("/api/stats/player/") :]).strip()
+            if not ident or len(ident) > 64:
+                self._send(404, {"found": False})
+                return
+            try:
+                payload = build_player_payload(self.con, ident)
+            except Exception as exc:  # noqa: BLE001
+                print(f"player failed: {exc}", flush=True)
+                try:
+                    with LOCK:
+                        ensure_db(self.con)
+                    payload = build_player_payload(self.con, ident)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"player retry failed: {exc2}", flush=True)
+                    self._send(500, {"error": "database unavailable"})
+                    return
+            self._send(200, payload)
+            return
+        if path.startswith("/api/stats/resolve/"):
+            name = unquote(path[len("/api/stats/resolve/") :]).strip()
+            steamid = _resolve_vanity(name)
+            if steamid:
+                self._send(200, {"steamid": steamid})
+            else:
+                self._send(404, {"error": "vanity not found"})
+            return
+        if path == "/api/stats/avatar/full":
+            steam = ((qs.get("steam") or [""])[0] or "").strip()
+            blob = full_avatar_bytes(steam)
+            if not blob:
+                self._send(404, {"error": "no avatar"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(blob)
             return
         # HTML is public shell; data APIs require cookie after password login.
         if path in ("/statistics", "/statistics/index.html"):

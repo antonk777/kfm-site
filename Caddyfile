@@ -45,7 +45,12 @@
 		-Server
 	}
 
-	file_server
+	# The Vue app owns /players/* and every other page: unknown paths fall
+	# back to its index.html (SPA routing).
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 
 	log {
 		output file {$SITE_LOG:/var/log/caddy/kfm.manul.lol.log} {
