@@ -56,8 +56,15 @@
 	}
 }
 
-{$SITE_DOMAIN:kfm.manul.lol} {
+# kf-maniacs.com is the main address. The old kfm.manul.lol serves the same
+# site, not a redirect: old builds and links keep working. Root and log paths
+# keep the old name, so download counts carry on.
+kf-maniacs.com, {$SITE_DOMAIN:kfm.manul.lol} {
 	import site
+}
+
+www.kf-maniacs.com {
+	redir https://kf-maniacs.com{uri} permanent
 }
 
 # Reachable before DNS is pointed at this VPS (and for health checks).

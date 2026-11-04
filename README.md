@@ -1,6 +1,6 @@
 # KF-Maniacs site on Caddy
 
-Public download page for **KFM Companion** at [https://kfm.manul.lol/](https://kfm.manul.lol/).
+Public download page for **KFM Companion** at [https://kf-maniacs.com/](https://kf-maniacs.com/) (the old https://kfm.manul.lol/ serves the same site).
 
 | Piece | Role |
 |-------|------|
@@ -28,7 +28,7 @@ Manual sync: `sudo bash /opt/kfm-site/sync-now.sh`
 
 ## One-time host setup
 
-DNS: `kfm.manul.lol` **A → VPS IP**, Cloudflare **DNS only** (grey cloud) for Let's Encrypt.
+DNS (Dynadot): `kf-maniacs.com`, `www.kf-maniacs.com` and `kfm.manul.lol` **A → VPS IP**, no AAAA, no forwarding/parking. Caddy gets the certificates itself.
 Until then: `http://SITE_IP/`.
 
 ```bash
@@ -68,6 +68,21 @@ query port (28852 + game port - 7707) being closed in the host firewall, see
 `server-scripts/kf-firewall.sh`. `GET /api/stats/admin/status` returns the raw poll
 (`steam.listed`, `steam.error`). The public `/api/stats/servers` does not carry it.
 
+## Discord card on the landing page
+
+Under the server cards the landing page shows the KF-Maniacs Discord
+(`discord.gg/MJXsav9DFC`): name and icon, members online and in total, and a join
+button. `stats-server.py` asks Discord once a minute (`DISCORD_POLL_SEC`) for everyone
+and serves the last answer as the public `/api/stats/discord` (`checked`, `online`,
+`members`, `widget`, `onlineMembers`, `stale`); the page polls it every 60 s. The counts
+come from the public invite lookup, so no token or bot is needed. The online members'
+names, avatars and games appear once the server widget is on in Discord (Server
+Settings → Widget → Enable Server Widget); until then `widget.json` answers 403 and the
+card shows the counts only. `DISCORD_INVITE` in `/etc/kfm-site.env` changes the invite
+code (default `MJXsav9DFC`; empty turns the polling off, the card keeps its join
+button). The last poll is in `GET /api/stats/admin/status` (`discord.ok`,
+`discord.error`); errors also go to `journalctl -u kfm-stats`.
+
 Map previews are `maps/<map name in lower case>.jpg` (512x288, 16:9), the screenshot each
 map's `LevelSummary` names, decoded straight from the `.rom`. Regenerate after new maps
 land on the servers (in kfm-mut):
@@ -101,7 +116,7 @@ included. All statistics (sessions, daily unique/peak, clears, retention) skip
 players whose `players.admin` is non-zero.
 
 1. `sudo -E SKIP_FETCH=1 bash deploy.sh` (starts `kfm-stats.service`, reloads Caddy)
-2. Open `https://kfm.manul.lol/statistics/`
+2. Open `https://kf-maniacs.com/statistics/`
 
 ### Game server push (Unreal → site)
 

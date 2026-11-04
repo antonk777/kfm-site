@@ -231,7 +231,7 @@
       gap: 0.5rem;
       padding: 0.6rem 0.75rem 0.75rem;
     }
-    .server-actions a.join {
+    .server-actions a.join, .discord-card a.join {
       flex: 1;
       display: block;
       padding: 0.5rem 0.75rem;
@@ -244,7 +244,7 @@
       text-align: center;
       white-space: nowrap;
     }
-    .server-actions a.join:hover { filter: brightness(1.08); }
+    .server-actions a.join:hover, .discord-card a.join:hover { filter: brightness(1.08); }
     .server-actions button.plist-toggle {
       appearance: none;
       padding: 0.5rem 0.75rem;
@@ -321,6 +321,90 @@
       font-size: 0.9rem;
       margin: 0;
     }
+    /* Discord card */
+    .discord-card {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem 1rem;
+      padding: 0.75rem;
+      background: #111;
+      border: 1px solid #2a2a2a;
+    }
+    .discord-card.stale { opacity: 0.6; }
+    .dc-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: #1b1b1b;
+      flex: 0 0 auto;
+    }
+    .dc-icon[hidden] { display: none; }
+    .dc-body {
+      flex: 1 1 12rem;
+      min-width: 0;
+    }
+    .dc-name {
+      font-weight: 600;
+      font-size: 1.05rem;
+      line-height: 1.25;
+    }
+    .dc-counts {
+      margin: 0.15rem 0 0;
+      color: #b9b09c;
+      font-size: 0.9rem;
+    }
+    .dc-online::before {
+      content: "";
+      display: inline-block;
+      width: 0.55em;
+      height: 0.55em;
+      margin-right: 0.35em;
+      border-radius: 50%;
+      background: #8fbf7f;
+      vertical-align: 0.05em;
+    }
+    .dc-members {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem 0.75rem;
+      margin: 0.5rem 0 0;
+      padding: 0;
+      list-style: none;
+      font-size: 0.85rem;
+      color: #b9b09c;
+    }
+    .dc-members[hidden] { display: none; }
+    .dc-members li {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      max-width: 100%;
+    }
+    .dc-members li::before {
+      content: "";
+      flex: 0 0 auto;
+      width: 0.5em;
+      height: 0.5em;
+      border-radius: 50%;
+      background: #8fbf7f;
+    }
+    .dc-members li.st-idle::before { background: #e6c35c; }
+    .dc-members li.st-dnd::before { background: #e66b5c; }
+    .dc-members img {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+    .dc-members span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dc-members .game { color: #7a7366; }
+    .discord-card a.join { flex: 0 0 auto; }
+    @media (max-width: 40rem) { .discord-card a.join { flex-basis: 100%; } }
   </style>
 </head>
 <body>
@@ -338,6 +422,10 @@
     <section class="servers" id="servers">
       <h2 data-i18n="servers">Our servers</h2>
       <div class="server-grid" id="serverGrid"></div>
+    </section>
+    <section class="servers discord" id="discord">
+      <h2 data-i18n="discord">Our Discord</h2>
+      <div id="discordCard"></div>
     </section>
     <div class="copy">
     <p data-i18n="intro">KF-Maniacs is a Killing Floor community. You need KFM Companion so Steam keeps your stats and achievements after you play on our server.</p>
@@ -427,18 +515,21 @@
     };
 
     const SRV_I18N = {
-      en: { servers: "Our servers", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", copied: "Copied", loading: "Loading…", unavailable: "Server monitor is unavailable right now.", steamListed: "Listed in the Steam browser", steamMissing: "Missing from the Steam browser", steamChecked: "Steam list checked at",
+      en: { servers: "Our servers", discord: "Our Discord", discordJoin: "Join Discord", discordOnline: "Online", discordMembers: "Members", discordUnavailable: "Discord monitor is unavailable right now.", join: "Join via Steam", players: "Players", wave: "Wave", bossWave: "Boss wave", noPlayers: "No players", offline: "No connection to the server", stale: "Data may be out of date", address: "Address", copied: "Copied", loading: "Loading…", unavailable: "Server monitor is unavailable right now.", steamListed: "Listed in the Steam browser", steamMissing: "Missing from the Steam browser", steamChecked: "Steam list checked at",
             diff: { beginner: "Beginner", normal: "Normal", hard: "Hard", suicidal: "Suicidal", hoe: "Hell on Earth", brutal: "Brutal" } },
-      ru: { servers: "Наши серверы", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", copied: "Скопировано", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.", steamListed: "Есть в списке серверов Steam", steamMissing: "Нет в списке серверов Steam", steamChecked: "Список Steam проверен в",
+      ru: { servers: "Наши серверы", discord: "Наш Discord", discordJoin: "Зайти в Discord", discordOnline: "Онлайн", discordMembers: "Участники", discordUnavailable: "Мониторинг Discord сейчас недоступен.", join: "Зайти через Steam", players: "Игроки", wave: "Волна", bossWave: "Волна босса", noPlayers: "Нет игроков", offline: "Нет связи с сервером", stale: "Данные могли устареть", address: "Адрес", copied: "Скопировано", loading: "Загрузка…", unavailable: "Мониторинг серверов сейчас недоступен.", steamListed: "Есть в списке серверов Steam", steamMissing: "Нет в списке серверов Steam", steamChecked: "Список Steam проверен в",
             diff: { beginner: "Новичок", normal: "Нормальный", hard: "Сложный", suicidal: "Суицидальный", hoe: "Ад на Земле", brutal: "Брутальный" } },
-      zh: { servers: "我们的服务器", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", copied: "已复制", loading: "加载中…", unavailable: "服务器监控暂时不可用。", steamListed: "已在 Steam 服务器列表中", steamMissing: "不在 Steam 服务器列表中", steamChecked: "Steam 列表检查时间",
+      zh: { servers: "我们的服务器", discord: "我们的 Discord", discordJoin: "加入 Discord", discordOnline: "在线", discordMembers: "成员", discordUnavailable: "Discord 监控暂时不可用。", join: "通过 Steam 加入", players: "玩家", wave: "波次", bossWave: "Boss 波", noPlayers: "暂无玩家", offline: "无法连接服务器", stale: "数据可能已过时", address: "地址", copied: "已复制", loading: "加载中…", unavailable: "服务器监控暂时不可用。", steamListed: "已在 Steam 服务器列表中", steamMissing: "不在 Steam 服务器列表中", steamChecked: "Steam 列表检查时间",
             diff: { beginner: "新手", normal: "普通", hard: "困难", suicidal: "自杀", hoe: "人间地狱", brutal: "残酷" } },
-      es: { servers: "Nuestros servidores", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", copied: "Copiado", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.", steamListed: "En la lista de servidores de Steam", steamMissing: "No aparece en la lista de Steam", steamChecked: "Lista de Steam comprobada a las",
+      es: { servers: "Nuestros servidores", discord: "Nuestro Discord", discordJoin: "Entrar en Discord", discordOnline: "En línea", discordMembers: "Miembros", discordUnavailable: "El monitor de Discord no está disponible ahora.", join: "Entrar por Steam", players: "Jugadores", wave: "Oleada", bossWave: "Oleada del jefe", noPlayers: "Sin jugadores", offline: "Sin conexión con el servidor", stale: "Los datos pueden estar desactualizados", address: "Dirección", copied: "Copiado", loading: "Cargando…", unavailable: "El monitor de servidores no está disponible ahora.", steamListed: "En la lista de servidores de Steam", steamMissing: "No aparece en la lista de Steam", steamChecked: "Lista de Steam comprobada a las",
             diff: { beginner: "Principiante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Infierno en la Tierra", brutal: "Brutal" } },
-      pt: { servers: "Nossos servidores", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", copied: "Copiado", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.", steamListed: "Na lista de servidores do Steam", steamMissing: "Fora da lista de servidores do Steam", steamChecked: "Lista do Steam verificada às",
+      pt: { servers: "Nossos servidores", discord: "Nosso Discord", discordJoin: "Entrar no Discord", discordOnline: "Online", discordMembers: "Membros", discordUnavailable: "O monitor do Discord está indisponível no momento.", join: "Entrar pelo Steam", players: "Jogadores", wave: "Onda", bossWave: "Onda do chefe", noPlayers: "Sem jogadores", offline: "Sem conexão com o servidor", stale: "Os dados podem estar desatualizados", address: "Endereço", copied: "Copiado", loading: "Carregando…", unavailable: "O monitor de servidores está indisponível no momento.", steamListed: "Na lista de servidores do Steam", steamMissing: "Fora da lista de servidores do Steam", steamChecked: "Lista do Steam verificada às",
             diff: { beginner: "Iniciante", normal: "Normal", hard: "Difícil", suicidal: "Suicida", hoe: "Inferno na Terra", brutal: "Brutal" } }
     };
-    Object.keys(SRV_I18N).forEach((l) => { I18N[l].servers = SRV_I18N[l].servers; });
+    Object.keys(SRV_I18N).forEach((l) => {
+      I18N[l].servers = SRV_I18N[l].servers;
+      I18N[l].discord = SRV_I18N[l].discord;
+    });
 
     // Server monitor: /api/stats/servers every 10 s; cards are built once and
     // updated in place so an open player list stays open. The Steam listing
@@ -645,6 +736,96 @@
         });
     }
 
+    // Discord card: /api/stats/discord every 60 s (the server asks Discord once a
+    // minute for everyone). Members online and in total come from the public
+    // invite; names and avatars only once the server widget is on.
+    const DISCORD_URL = "/api/stats/discord";
+    const DISCORD_EVERY_MS = 60000;
+    let discordData = null;
+    let discordFailed = false;
+
+    function renderDiscord() {
+      const box = document.getElementById("discordCard");
+      if (!box) return;
+      if (!discordData) {
+        box.textContent = "";
+        box.appendChild(el("p", "error", discordFailed ? srvText("discordUnavailable") : srvText("loading")));
+        return;
+      }
+      let card = box.querySelector(".discord-card");
+      if (!card) {
+        box.textContent = "";
+        card = el("article", "discord-card");
+        const icon = el("img", "dc-icon");
+        icon.alt = "";
+        icon.hidden = true;
+        icon.addEventListener("error", () => { icon.hidden = true; });
+        card.appendChild(icon);
+        const body = el("div", "dc-body");
+        body.appendChild(el("div", "dc-name"));
+        body.appendChild(el("p", "dc-counts"));
+        body.appendChild(el("ul", "dc-members"));
+        card.appendChild(body);
+        const join = el("a", "join");
+        join.rel = "noopener";
+        join.target = "_blank";
+        card.appendChild(join);
+        box.appendChild(card);
+      }
+      const d = discordData;
+      card.classList.toggle("stale", !!d.stale && !!d.checked);
+      const icon = card.querySelector(".dc-icon");
+      const src = d.icon || "";
+      if (icon.dataset.src !== src) {
+        icon.dataset.src = src;
+        icon.hidden = !src;
+        if (src) icon.src = src;
+      }
+      card.querySelector(".dc-name").textContent = d.name || "Discord";
+      const counts = card.querySelector(".dc-counts");
+      counts.textContent = "";
+      if (d.checked) {
+        counts.appendChild(el("span", "dc-online", srvText("discordOnline") + ": " + (d.online || 0)));
+        counts.appendChild(document.createTextNode(" · "));
+        counts.appendChild(el("span", null, srvText("discordMembers") + ": " + (d.members || 0)));
+      } else {
+        counts.textContent = srvText(d.stale ? "discordUnavailable" : "loading");
+      }
+      const list = card.querySelector(".dc-members");
+      list.textContent = "";
+      const members = d.onlineMembers || [];
+      members.forEach((m) => {
+        const li = el("li", "st-" + (m.status || "online"));
+        if (m.avatar) {
+          const av = el("img");
+          av.src = m.avatar;
+          av.alt = "";
+          av.loading = "lazy";
+          li.appendChild(av);
+        }
+        li.appendChild(el("span", null, m.name || "???"));
+        if (m.game) li.appendChild(el("span", "game", m.game));
+        list.appendChild(li);
+      });
+      list.hidden = !members.length;
+      const join = card.querySelector("a.join");
+      join.href = d.invite || "https://discord.gg/MJXsav9DFC";
+      join.textContent = srvText("discordJoin");
+    }
+
+    function pollDiscord() {
+      fetch(DISCORD_URL, { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(res.status))))
+        .then((data) => {
+          discordData = data && data.invite ? data : null;
+          discordFailed = !discordData;
+          renderDiscord();
+        })
+        .catch(() => {
+          if (!discordData) { discordFailed = true; renderDiscord(); }
+        });
+    }
+
     const langs = Object.keys(I18N);
     let release = null;
     let currentLang = langs.includes(localStorage.getItem("kfm-lang"))
@@ -677,13 +858,21 @@
         btn.setAttribute("aria-current", btn.getAttribute("data-lang") === lang ? "true" : "false");
       });
       renderServers();
+      renderDiscord();
     }
 
     if (currentLang !== "en") apply(currentLang);
     renderServers();
+    renderDiscord();
     pollServers();
+    pollDiscord();
     setInterval(pollServers, SERVERS_EVERY_MS);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) pollServers(); });
+    setInterval(pollDiscord, DISCORD_EVERY_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      pollServers();
+      pollDiscord();
+    });
 
     fetch("release.json")
       .then((res) => (res.ok ? res.json() : null))

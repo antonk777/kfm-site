@@ -16,6 +16,8 @@ Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
   KFM_MYSQL_*   same as perkhost
   STATS_HOST / STATS_PORT / STATS_DAYS
   SITE_LOG      Caddy JSON access log (Companion download counts)
+  DISCORD_INVITE  invite code behind the landing-page Discord card
+                  (default MJXsav9DFC; empty turns the card's data off)
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
@@ -62,7 +65,9 @@ SERVER_LABELS = {
 # the game connects itself. steam://connect/ does not work for KF1 here: Steam
 # verifies the server through its backend first and answers "app id specified
 # by server is invalid" for any port (the servers run RevEmu, not real Steam).
-# MaxPlayers= is set in start.sh.
+# The game pushes maxPlayers with each live status: 6, growing to 8 and 10 as the
+# server fills (KFGameTypeMv2.UpdateSlotCount). MAX_PLAYERS is the fallback until
+# the first push.
 PUBLIC_HOST = os.environ.get("KFM_PUBLIC_HOST") or os.environ.get("SITE_IP") or "85.192.30.108"
 MAX_PLAYERS = 6
 KF_APP_ID = 1250
@@ -80,6 +85,21 @@ STEAM_BASE_GAME_PORT = 7707
 _STEAM_LOCK = threading.Lock()
 # ts/ok/error of the last poll; listed: slot -> {"listed", "queryPort", ...}.
 _STEAM: dict[str, Any] = {"ts": 0, "ok": False, "error": "", "listed": {}}
+# Discord card on the landing page (/api/stats/discord): members online and in
+# total from the public invite lookup (no token, no bot). With the server
+# widget on (Discord: Server Settings -> Widget -> Enable Server Widget) the
+# online members' names, avatars and games come from widget.json too. One poll
+# per DISCORD_POLL_SEC for everyone; the last answer is kept through errors.
+DISCORD_API_URL = "https://discord.com/api/v10"
+# The widget lives on the unversioned path: /api/v10/guilds/<id>/widget.json
+# kept answering "Widget Disabled" after the widget was turned on (2026-11-04).
+DISCORD_WIDGET_URL = "https://discord.com/api/guilds/{gid}/widget.json"
+DISCORD_CDN_URL = "https://cdn.discordapp.com"
+DISCORD_DEFAULT_INVITE = "MJXsav9DFC"
+DISCORD_POLL_SEC = 60
+_DISCORD_LOCK = threading.Lock()
+# ts/ok/error of the last poll; data: the last successful fetch_discord().
+_DISCORD: dict[str, Any] = {"ts": 0, "ok": False, "error": "", "data": None}
 # Legacy short name from before per-slot StatsServerName — drop from UI and aggregates.
 IGNORED_SERVERS = frozenset({"beta"})
 # Retired slot ids. DB rows, pid files and logs under them belong to the renamed
@@ -577,6 +597,7 @@ def ingest_live(con, p: dict[str, Any]) -> None:
         "finalWave": int(num(p.get("finalWave"), num(p.get("final_wave"), 0))),
         "difficulty": difficulty,
         "online": online,
+        "maxPlayers": int(num(p.get("maxPlayers"), 0)),
         "players": players,
         "worstTick": tick_ms,
         "ts": ts,
@@ -836,7 +857,7 @@ def build_public_servers() -> dict[str, Any]:
                 "wave": int(live.get("wave") or 0),
                 "finalWave": int(live.get("finalWave") or 0),
                 "online": int(live.get("online") or len(players)),
-                "maxPlayers": MAX_PLAYERS,
+                "maxPlayers": int(live.get("maxPlayers") or MAX_PLAYERS),
                 "players": players,
                 "stale": bool(live.get("stale")),
                 "updated": int(live.get("ts") or 0),
@@ -929,6 +950,134 @@ def steam_poll_loop() -> None:
                 _STEAM["error"] = str(exc)[:200]
             print(f"steam list failed: {exc}", flush=True)
         time.sleep(STEAM_POLL_SEC)
+
+
+def discord_invite_code() -> str:
+    """Read at call time: load_env_files() runs after import on a manual start."""
+    raw = os.environ.get("DISCORD_INVITE")
+    if raw is None:
+        return DISCORD_DEFAULT_INVITE
+    return raw.strip().rsplit("/", 1)[-1]
+
+
+def _discord_get(url: str) -> tuple[int, Any]:
+    """One unauthenticated GET; an HTTP error comes back as its status code."""
+    req = urllib.request.Request(url, headers={"User-Agent": "kfm-stats/1.0 (https://kfm.manul.lol/)"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            code = int(resp.status)
+            raw = resp.read(1048576)
+    except urllib.error.HTTPError as exc:
+        code = int(exc.code)
+        raw = exc.read(65536)
+    try:
+        body = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        body = {"raw": raw[:200].decode("utf-8", "replace")}
+    return code, body
+
+
+def fetch_discord() -> dict[str, Any]:
+    """Guild name, icon, members online / in total; the online members when
+    the widget is on. Raises when the invite lookup fails."""
+    code = discord_invite_code()
+    status, inv = _discord_get(f"{DISCORD_API_URL}/invites/{code}?with_counts=true&with_expiration=true")
+    if status != 200 or not isinstance(inv, dict):
+        msg = inv.get("message") if isinstance(inv, dict) else inv
+        raise RuntimeError(f"invite {code}: HTTP {status} {str(msg)[:120]}")
+    guild = inv.get("guild") or {}
+    gid = str(guild.get("id") or "")
+    icon_hash = str(guild.get("icon") or "")
+    icon = ""
+    if gid and icon_hash:
+        ext = "gif" if icon_hash.startswith("a_") else "png"
+        icon = f"{DISCORD_CDN_URL}/icons/{gid}/{icon_hash}.{ext}?size=128"
+    data: dict[str, Any] = {
+        "name": str(guild.get("name") or "Discord")[:100],
+        "icon": icon,
+        "invite": f"https://discord.gg/{code}",
+        "online": int(inv.get("approximate_presence_count") or 0),
+        "members": int(inv.get("approximate_member_count") or 0),
+        "widget": False,
+        "onlineMembers": [],
+    }
+    if not gid:
+        return data
+    # 403 "Widget Disabled" until the owner turns the widget on; the counts
+    # from the invite stay either way.
+    status, widget = _discord_get(DISCORD_WIDGET_URL.format(gid=gid))
+    if status == 200 and isinstance(widget, dict):
+        members = []
+        for m in widget.get("members") or []:
+            if not isinstance(m, dict):
+                continue
+            game = m.get("game") if isinstance(m.get("game"), dict) else {}
+            members.append(
+                {
+                    "name": str(m.get("username") or "")[:64],
+                    # widget-avatars URLs run ~240 chars
+                    "avatar": str(m.get("avatar_url") or "")[:512],
+                    "status": str(m.get("status") or "online")[:16],
+                    "game": str(game.get("name") or "")[:64],
+                }
+            )
+        data["widget"] = True
+        data["onlineMembers"] = members[:60]
+        if widget.get("presence_count") is not None:
+            data["online"] = int(widget.get("presence_count") or 0)
+    return data
+
+
+def discord_poll_loop() -> None:
+    """Every DISCORD_POLL_SEC, never sooner: an error keeps the last answer and
+    waits the full interval (Discord rate-limits unauthenticated lookups)."""
+    while True:
+        try:
+            data = fetch_discord()
+            with _DISCORD_LOCK:
+                _DISCORD.update({"ts": now_ts(), "ok": True, "error": "", "data": data})
+        except Exception as exc:  # noqa: BLE001
+            with _DISCORD_LOCK:
+                _DISCORD["ok"] = False
+                _DISCORD["error"] = str(exc)[:200]
+            print(f"discord poll failed: {exc}", flush=True)
+        time.sleep(DISCORD_POLL_SEC)
+
+
+def build_public_discord() -> dict[str, Any]:
+    """Landing-page Discord card: the last poll. checked = 0 before the first
+    successful one (the card then shows the invite button only); stale = the
+    last poll is old or failed."""
+    with _DISCORD_LOCK:
+        snap = dict(_DISCORD)
+    checked = int(snap.get("ts") or 0)
+    out: dict[str, Any] = {
+        "ts": now_ts(),
+        "checked": checked,
+        "name": "KF-Maniacs",
+        "invite": f"https://discord.gg/{discord_invite_code() or DISCORD_DEFAULT_INVITE}",
+    }
+    if snap.get("data"):
+        out.update(snap["data"])
+    out["stale"] = (not snap.get("ok")) or (now_ts() - checked > DISCORD_POLL_SEC * 5)
+    return out
+
+
+def discord_status() -> dict[str, Any]:
+    """For /api/stats/admin/status: the last poll and its error."""
+    with _DISCORD_LOCK:
+        snap = dict(_DISCORD)
+    data = snap.get("data") or {}
+    return {
+        "checked": int(snap.get("ts") or 0),
+        "ok": bool(snap.get("ok")),
+        "error": str(snap.get("error") or ""),
+        "invite": discord_invite_code(),
+        "widget": bool(data.get("widget")),
+        "online": int(data.get("online") or 0),
+        "members": int(data.get("members") or 0),
+        "pollSec": DISCORD_POLL_SEC,
+    }
 
 
 def mysql_cfg() -> dict[str, Any]:
@@ -2160,6 +2309,8 @@ KF_MAPS = KF_HOME / "killingfloor" / "Maps"
 KF_START = str(KF_HOME / "start.sh")
 KF_STOP = str(KF_HOME / "stop.sh")
 KF_RESTART = str(KF_HOME / "restart.sh")
+# start.sh reads run/<slot>.map once: the unit's ExecStart takes no KF_MAP.
+MAP_REQUEST_DIR = KF_HOME / "run"
 ADMIN_COOKIE = "kfm_stats_auth"
 ADMIN_TTL_SEC = 60 * 60 * 24 * 14  # 14 days
 _ADMIN_LOCK = threading.Lock()
@@ -2386,6 +2537,99 @@ def admin_read_log(
     }
 
 
+# --- Process supervision ---------------------------------------------------
+#
+# systemd owns each game server (kf-server@<slot>.service, written by
+# server-scripts/install.sh) and brings a crashed slot back. A slot started
+# here through start.sh runs outside its unit with nothing watching it: on
+# 2026-11-03 Meat Grinder crashed and stayed down until an admin noticed. So a
+# restart goes through systemctl, and stop.sh + start.sh stay only for a host
+# without the units. This service runs as root; elsewhere sudo -n is tried.
+
+
+def _unit_name(slot: str) -> str:
+    return f"kf-server@{slot}.service"
+
+
+def _systemctl(args: list[str], *, privileged: bool = False, timeout: float = 180) -> dict[str, Any]:
+    cmd = ["systemctl", *args]
+    if privileged and hasattr(os, "geteuid") and os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "rc": -1, "stdout": "", "stderr": str(exc)[-4000:], "cmd": cmd}
+    return {
+        "ok": proc.returncode == 0,
+        "rc": proc.returncode,
+        "stdout": (proc.stdout or "")[-4000:],
+        "stderr": (proc.stderr or "")[-4000:],
+        "cmd": cmd,
+    }
+
+
+def _unit_managed(slot: str) -> bool:
+    """True when systemd has the slot's unit, active or not (LoadState needs no rights)."""
+    res = _systemctl(["show", "-p", "LoadState", "--value", _unit_name(slot)], timeout=10)
+    return res["ok"] and res["stdout"].strip() == "loaded"
+
+
+def _unit_active(slot: str) -> bool:
+    return _systemctl(["is-active", "--quiet", _unit_name(slot)], timeout=10)["ok"]
+
+
+def _write_map_request(slot: str, rom: str) -> None:
+    path = MAP_REQUEST_DIR / f"{slot}.map"
+    MAP_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(rom + "\n", encoding="utf-8")
+    try:
+        import pwd
+
+        pw = pwd.getpwnam("kfserver")
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except (ImportError, KeyError, OSError):
+        pass
+
+
+def _restart_slot(slot: str, *, map_rom: str | None = None) -> dict[str, Any]:
+    """Restart one slot so that systemd owns the new process."""
+    retired = server_name_variants(slot)[1:]
+    if not _unit_managed(slot):
+        # No unit on this host: the old way, with nothing watching the result.
+        for old in retired:
+            _run_as_kfserver([KF_STOP, old], timeout=60)
+        stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
+        argv = [KF_START, slot]
+        if map_rom is not None:
+            argv = ["env", f"KF_MAP={map_rom}", *argv]
+        start = _run_as_kfserver(argv, timeout=120)
+        return {
+            "ok": bool(stop.get("ok") and start.get("ok")),
+            "server": slot,
+            "stop": stop,
+            "start": start,
+            "supervised": False,
+        }
+    # A process started by hand, or one under a retired id, holds the port
+    # while the unit is inactive: stop.sh ends it, then the unit starts the
+    # slot. An active unit is stopped by its own ExecStop (stop.sh).
+    stop: dict[str, Any] = {"ok": True, "skipped": "unit active, systemctl stops it"}
+    if not _unit_active(slot):
+        for old in retired:
+            _run_as_kfserver([KF_STOP, old], timeout=60)
+        stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
+    if map_rom is not None:
+        _write_map_request(slot, map_rom)
+    start = _systemctl(["restart", _unit_name(slot)], privileged=True, timeout=180)
+    return {
+        "ok": bool(stop.get("ok", True) and start.get("ok")),
+        "server": slot,
+        "stop": stop,
+        "start": start,
+        "supervised": True,
+    }
+
+
 def admin_restart(server: str | None) -> dict[str, Any]:
     slot = normalize_server(server) if server else None
     if slot and slot not in PANEL_SERVERS:
@@ -2402,19 +2646,16 @@ def admin_restart(server: str | None) -> dict[str, Any]:
         _ADMIN_BUSY["started"] = now_ts()
     try:
         if not slot:
-            result = _run_as_kfserver([KF_RESTART], timeout=240)
-        else:
-            # A process under a retired id holds the same port — stop it first.
-            for old in server_name_variants(slot)[1:]:
-                _run_as_kfserver([KF_STOP, old], timeout=60)
-            stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
-            start = _run_as_kfserver([KF_START, slot], timeout=120)
+            results = [_restart_slot(s) for s in PANEL_SERVERS]
             result = {
-                "ok": stop.get("ok") and start.get("ok"),
-                "stop": stop,
-                "start": start,
-                "server": slot,
+                "ok": all(r.get("ok") for r in results),
+                "servers": results,
+                "stdout": "\n".join(
+                    f"{r['server']}: {'ok' if r.get('ok') else 'FAILED'}" for r in results
+                ),
             }
+        else:
+            result = _restart_slot(slot)
         result["op"] = label
         return result
     finally:
@@ -2440,19 +2681,10 @@ def admin_change_map(server: str, map_name: str) -> dict[str, Any]:
         _ADMIN_BUSY["op"] = label
         _ADMIN_BUSY["started"] = now_ts()
     try:
-        stop = _run_as_kfserver([KF_STOP, slot], timeout=60)
-        start = _run_as_kfserver(
-            ["env", f"KF_MAP={rom}", KF_START, slot],
-            timeout=120,
-        )
-        return {
-            "ok": bool(stop.get("ok") and start.get("ok")),
-            "server": slot,
-            "map": rom,
-            "stop": stop,
-            "start": start,
-            "op": label,
-        }
+        result = _restart_slot(slot, map_rom=rom)
+        result["map"] = rom
+        result["op"] = label
+        return result
     finally:
         with _ADMIN_LOCK:
             _ADMIN_BUSY["op"] = None
@@ -2798,6 +3030,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, payload)
             return
+        # Public: the landing page's Discord card.
+        if path == "/api/stats/discord":
+            self._send(200, build_public_discord())
+            return
         # HTML is public shell; data APIs require cookie after password login.
         if path in ("/statistics", "/statistics/index.html"):
             html = HTML_PATH.read_text(encoding="utf-8")
@@ -2882,7 +3118,12 @@ class Handler(BaseHTTPRequestHandler):
                 }
             self._send(
                 200,
-                {"busy": busy.get("op"), "started": busy.get("started") or 0, "steam": steam},
+                {
+                    "busy": busy.get("op"),
+                    "started": busy.get("started") or 0,
+                    "steam": steam,
+                    "discord": discord_status(),
+                },
             )
             return
         self._send(404, {"error": "not found"})
@@ -3020,6 +3261,10 @@ def main() -> None:
         threading.Thread(target=steam_poll_loop, name="stats-steam", daemon=True).start()
     else:
         print("WARN: STEAM_WEB_API_KEY unset — Steam listing check off", flush=True)
+    if discord_invite_code():
+        threading.Thread(target=discord_poll_loop, name="stats-discord", daemon=True).start()
+    else:
+        print("discord card data off: DISCORD_INVITE is empty", flush=True)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     cfg = mysql_cfg()
     print(
