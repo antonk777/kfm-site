@@ -962,7 +962,7 @@ def discord_invite_code() -> str:
 
 def _discord_get(url: str) -> tuple[int, Any]:
     """One unauthenticated GET; an HTTP error comes back as its status code."""
-    req = urllib.request.Request(url, headers={"User-Agent": "kfm-stats/1.0 (https://kfm.manul.lol/)"})
+    req = urllib.request.Request(url, headers={"User-Agent": "kfm-stats/1.0 (https://kf-maniacs.com/)"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             code = int(resp.status)
