@@ -579,9 +579,8 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     server = canon_server_name(p.get("server") or p.get("server_name"))
     if not server:
         return
-    # The live card lists everyone on the server, admins included. Admins are
-    # dropped only from the stats (sessions, uniques, peaks), not from "who is
-    # playing right now".
+    # The live card lists everyone. Session rows are stored for the player page
+    # too; daily unique, peak, retention and the pies still skip DB admins.
     players = _parse_live_players(str(p.get("players") or ""))
     online = len(players)
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
@@ -1305,19 +1304,6 @@ def non_admin_sql(alias: str = "sp") -> str:
     )
 
 
-def is_admin_steam(con, steam: str) -> bool:
-    steam = str(steam or "").strip()
-    if not steam:
-        return False
-    cur = con.cursor()
-    cur.execute(
-        "SELECT `admin` AS a FROM `players` WHERE `steam_id`=%s LIMIT 1",
-        (steam,),
-    )
-    row = cur.fetchone()
-    return bool(row and int(row.get("a") or 0) != 0)
-
-
 def repair_blank_server_names(con) -> None:
     """Blank or beta rows whose session key starts with a live slot belong on that slot.
 
@@ -1536,8 +1522,6 @@ def ingest_player_join(con, p: dict[str, Any]) -> None:
     perk_name = str(p.get("perk") or p.get("perk_name") or "")[:32]
     join_wave = int(num(p.get("joinWave"), num(p.get("join_wave"), 0)))
     with LOCK:
-        if is_admin_steam(con, steam):
-            return
         sid = ensure_map_session(con, p)
         touch_player(con, steam, name)
         con.cursor().execute(
@@ -1584,8 +1568,6 @@ def ingest_map_clear(con, p: dict[str, Any]) -> None:
     difficulty = float(num(p.get("diff"), num(p.get("difficulty"), 0.0)))
     server_name = server_from_payload(p)
     with LOCK:
-        if is_admin_steam(con, steam):
-            return
         touch_player(con, steam, name)
         cur = con.cursor()
         cur.execute(
@@ -1627,8 +1609,6 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
     outcome = str(p.get("outcome") or "leave").lower()[:16]
     wave = int(num(p.get("wave"), 0))
     with LOCK:
-        if is_admin_steam(con, steam):
-            return
         sid = ensure_map_session(con, p)
         touch_player(con, steam, name)
         con.cursor().execute(
