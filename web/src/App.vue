@@ -195,7 +195,7 @@ async function onSearch(): Promise<void> {
 .header-nav a {
   font-family: var(--font-display);
   font-size: 19px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   text-transform: uppercase;
   color: var(--text-dim);
   padding: 4px 12px;
@@ -216,7 +216,7 @@ async function onSearch(): Promise<void> {
   color: var(--text-dim);
   font: 12px var(--font-body);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   padding: 6px 30px 6px 10px;
   border-radius: 3px;
   cursor: pointer;

@@ -92,7 +92,7 @@ function onAvatarError(r: TopPlayerEntry): void {
 .top-table th {
   font-family: var(--font-display);
   font-size: 13px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.112em;
   text-transform: uppercase;
   color: var(--text-faint);
   font-weight: 400;
@@ -127,7 +127,7 @@ function onAvatarError(r: TopPlayerEntry): void {
 .top-admin {
   font-family: var(--font-display);
   font-size: 11px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.096em;
   color: #ff8a8d;
   border: 1px solid #7d2023;
   background: rgba(198, 18, 23, 0.18);
@@ -137,7 +137,7 @@ function onAvatarError(r: TopPlayerEntry): void {
 .top-veteran {
   font-family: var(--font-display);
   font-size: 11px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.096em;
   color: var(--gold-bright);
   border: 1px solid #7d6118;
   background: rgba(199, 139, 18, 0.14);
@@ -155,7 +155,7 @@ function onAvatarError(r: TopPlayerEntry): void {
   .top-cell { gap: 8px; flex-wrap: wrap; row-gap: 2px; }
   .top-avatar { width: 30px; height: 30px; }
   .top-name { font-size: 13px; flex: 1 1 auto; }
-  .top-admin, .top-veteran { font-size: 9px; letter-spacing: 0.06em; padding: 0 4px; }
+  .top-admin, .top-veteran { font-size: 9px; letter-spacing: 0.048em; padding: 0 4px; }
   .top-score { font-size: 16px; }
   .top-table td:nth-child(4) { font-size: 12.5px; }
 }

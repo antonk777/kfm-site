@@ -1,8 +1,6 @@
 /* Self-hosted Google Fonts (OFL): Oswald (latin/cyrillic/vietnamese) is the
    single display font, so Latin and Cyrillic never mix families. */
-   woff2 files live in public/assets/fonts. */
 
-/* Self-hosted Oswald subsets from Google Fonts (OFL). */
 @font-face {
   font-family: 'Oswald';
   font-style: normal;

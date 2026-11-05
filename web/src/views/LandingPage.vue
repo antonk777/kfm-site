@@ -348,7 +348,7 @@ onUnmounted(() => {
   top: 8px;
   font-family: var(--font-display);
   font-size: 18px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   text-transform: uppercase;
   color: #fff;
   background: rgba(10, 10, 12, 0.72);
@@ -382,7 +382,7 @@ onUnmounted(() => {
 .server-card .shot .caption .map {
   font-family: var(--font-display);
   font-size: 19px;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #fff;
   text-shadow: 0 1px 4px #000;
@@ -412,7 +412,7 @@ onUnmounted(() => {
   text-align: center;
   font-family: var(--font-display);
   font-size: 16px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   text-transform: uppercase;
   color: var(--text);
   background: var(--panel-2);
@@ -467,14 +467,14 @@ onUnmounted(() => {
 }
 .dc-icon { width: 44px; height: 44px; border-radius: 50%; }
 .dc-body { flex: 1; min-width: 0; }
-.dc-name { font-family: var(--font-display); font-size: 20px; letter-spacing: 0.06em; text-transform: uppercase; }
+.dc-name { font-family: var(--font-display); font-size: 20px; letter-spacing: 0.048em; text-transform: uppercase; }
 .dc-counts { margin: 2px 0 0; color: var(--text-dim); font-size: 13px; }
 .dc-online { color: var(--green); }
 .discord-card a.join {
   flex: none;
   font-family: var(--font-display);
   font-size: 16px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   text-transform: uppercase;
   color: var(--text);
   background: var(--panel-2);
@@ -490,7 +490,7 @@ a.dl {
   display: inline-block;
   font-family: var(--font-display);
   font-size: 20px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.064em;
   text-transform: uppercase;
   color: #fff;
   background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));

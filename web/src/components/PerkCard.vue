@@ -107,7 +107,7 @@ function statLine(s: PerkInfo["stats"][number]): string {
   font-family: var(--font-display);
   font-size: 24px;
   line-height: 1.05;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.048em;
   text-transform: uppercase;
   color: var(--text);
   min-width: 0;
@@ -119,7 +119,7 @@ function statLine(s: PerkInfo["stats"][number]): string {
   color: #fff;
   white-space: nowrap;
 }
-.perk-level small { color: var(--text-faint); font-size: 13px; letter-spacing: 0.12em; }
+.perk-level small { color: var(--text-faint); font-size: 13px; letter-spacing: 0.096em; }
 .perk-card.prestige .perk-level { color: var(--gold-bright); }
 
 .progress-track {

@@ -384,8 +384,8 @@ function perkNameOf(id: string): string {
   pointer-events: none;
   background: linear-gradient(180deg, transparent 55%, rgba(198, 18, 23, 0.28));
 }
-.skin-mini .skin-plate { margin-top: 7px; text-align: left; font-size: 11px; letter-spacing: 0.1em; }
-.skin-mini .skin-plate b { font-size: 13px; letter-spacing: 0.04em; line-height: 1.25; }
+.skin-mini .skin-plate { margin-top: 7px; text-align: left; font-size: 11px; letter-spacing: 0.08em; }
+.skin-mini .skin-plate b { font-size: 13px; letter-spacing: 0.032em; line-height: 1.25; }
 .skin-mini .skin-plate .skin-hint { max-width: 72px; }
 
 .identity { display: flex; flex-direction: column; gap: 14px; padding: 22px 22px 0; }
@@ -406,7 +406,7 @@ function perkNameOf(id: string): string {
   margin: 0 auto;
   font-family: var(--font-display);
   font-size: 15px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.176em;
   text-transform: uppercase;
   color: var(--text-dim);
   border: 1px solid var(--border);
@@ -428,17 +428,17 @@ function perkNameOf(id: string): string {
   text-align: center;
   font-family: var(--font-display);
   font-size: 15px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.096em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
-.skin-plate b { display: block; color: var(--text); font-size: 19px; letter-spacing: 0.08em; }
+.skin-plate b { display: block; color: var(--text); font-size: 19px; letter-spacing: 0.064em; }
 .skin-plate .skin-hint {
   display: block;
   margin-top: 5px;
   font-family: var(--font-body);
   font-size: 11px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.016em;
   text-transform: none;
   color: var(--text-faint);
   line-height: 1.35;
@@ -474,7 +474,7 @@ function perkNameOf(id: string): string {
   font-family: var(--font-display);
   font-size: 46px;
   line-height: 1;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   color: #fff;
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.8), 0 0 18px rgba(198, 18, 23, 0.35);
   word-break: break-word;
@@ -484,7 +484,7 @@ function perkNameOf(id: string): string {
 .badge {
   font-family: var(--font-display);
   font-size: 14px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.112em;
   padding: 3px 9px 2px;
   border: 1px solid;
   text-transform: uppercase;
@@ -511,7 +511,7 @@ function perkNameOf(id: string): string {
   width: fit-content;
   font-family: var(--font-display);
   font-size: 17px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #fff;
   background: linear-gradient(180deg, #2b3d4d, #1e2a35);
@@ -546,7 +546,7 @@ function perkNameOf(id: string): string {
 .score-cell .label {
   font-family: var(--font-display);
   font-size: 13px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.112em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -582,7 +582,7 @@ function perkNameOf(id: string): string {
 .sessions-table th {
   font-family: var(--font-display);
   font-size: 13px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.112em;
   text-transform: uppercase;
   color: var(--text-faint);
   font-weight: 400;
@@ -639,7 +639,7 @@ function perkNameOf(id: string): string {
 .clear-info .map-name {
   font-family: var(--font-display);
   font-size: 18px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.048em;
   text-transform: uppercase;
   color: #fff;
   text-shadow: 0 1px 4px #000;
@@ -675,7 +675,7 @@ function perkNameOf(id: string): string {
 .state-note h2 {
   font-family: var(--font-display);
   font-size: 30px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text);
   margin: 0 0 8px;
