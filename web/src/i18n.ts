@@ -41,7 +41,7 @@ const en: Dict = {
   "score.noRank": "—",
   // perks
   "perks.title": "Perks",
-  "perks.level": "Level",
+  "perks.level": "lvl",
   "perks.max": "Max",
   "perk.Field_Medic": "Field Medic",
   "perk.Support_Specialist": "Support Specialist",
@@ -171,7 +171,7 @@ const ru: Dict = {
   "score.welded": "Сварка",
   "score.noRank": "—",
   "perks.title": "Перки",
-  "perks.level": "Уровень",
+  "perks.level": "lvl",
   "perks.max": "Макс.",
   "perk.Field_Medic": "Полевой медик",
   "perk.Support_Specialist": "Поддержка",
