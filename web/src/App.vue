@@ -152,10 +152,7 @@ async function onSearch(): Promise<void> {
 
   <router-view />
 
-  <footer class="footer">
-    <span>{{ t("footer.data") }}</span>
-    <span>{{ t("footer.made") }} · kf-maniacs.com</span>
-  </footer>
+  <footer class="footer">{{ t("footer.made") }} · kf-maniacs.com</footer>
 </template>
 
 <style scoped>
@@ -243,14 +240,17 @@ async function onSearch(): Promise<void> {
 
 .lang-switch select {
   appearance: none;
+  box-sizing: border-box;
+  height: 32px;
   background: var(--panel-2);
   border: 1px solid var(--border-bright);
   color: var(--text-dim);
   font: 12px var(--font-body);
+  line-height: 30px;
   text-transform: uppercase;
   letter-spacing: 0.064em;
-  padding: 6px 30px 6px 10px;
-  border-radius: 3px;
+  padding: 0 30px 0 10px;
+  border-radius: 4px;
   cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238f8b80' stroke-width='1.5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -428,9 +428,6 @@ async function onSearch(): Promise<void> {
   border-top: 1px solid var(--border);
   color: var(--text-faint);
   font-size: 12.5px;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  text-align: center;
 }
 </style>

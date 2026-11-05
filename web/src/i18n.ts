@@ -102,7 +102,6 @@ const en: Dict = {
   "ach.completed": "{done} / {total}",
   "ach.locked": "Locked",
   // footer
-  "footer.data": "Data: KF-Maniacs production database snapshot",
   "footer.made": "KF-Maniacs",
   "lang.title": "Language",
   // search
@@ -234,7 +233,6 @@ const ru: Dict = {
   "ach.title": "Достижения",
   "ach.completed": "{done} / {total}",
   "ach.locked": "Заблокировано",
-  "footer.data": "Данные: снапшот боевой базы KF-Maniacs",
   "footer.made": "KF-Maniacs",
   "lang.title": "Язык",
   "search.placeholder": "Steam URL, Steam ID или KFM ID…",
