@@ -125,8 +125,16 @@ function outcomeClass(o: string): string {
 }
 
 function waveText(s: SessionInfo): string {
+  // Boss is FinalWave+1 (or a win). Old rows stored FinalWave+2 on a clear.
   const w = Math.max(0, s.maxWave || s.wave);
-  return `${w}/${s.finalWave || "?"}`;
+  const f = s.finalWave || 0;
+  const o = s.outcome || "";
+  const boss =
+    o === "win" ||
+    o === "victory" ||
+    (f > 0 && w > f);
+  if (boss) return t("sessions.boss");
+  return `${w}/${f || "?"}`;
 }
 
 function perkNameOf(id: string): string {

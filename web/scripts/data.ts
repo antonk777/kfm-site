@@ -325,6 +325,15 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
   const sessions: SessionInfo[] = sessionsRaw.map(({ sp, ms }) => {
     const mapName = str(ms!.map_name);
     const m = mapName.toLowerCase();
+    // Boss is FinalWave+1 (site shows "Boss"). Old clears stored FinalWave+2.
+    const finalWave = num(ms!.final_wave);
+    let wave = num(ms!.wave);
+    let maxWave = num(sp.max_wave);
+    if (finalWave > 0) {
+      const cap = finalWave + 1;
+      if (wave > cap) wave = cap;
+      if (maxWave > cap) maxWave = cap;
+    }
     return {
       map: m,
       mapPretty: prettyMap(mapName),
@@ -333,13 +342,13 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
       endedAt: num(ms!.ended_at),
       durationSec: num(ms!.duration_sec),
       outcome: str(sp.outcome) || str(ms!.outcome),
-      wave: num(ms!.wave),
-      finalWave: num(ms!.final_wave),
+      wave,
+      finalWave,
       difficulty: num(ms!.difficulty),
       server: serverLabel(ms!.server_name),
       perk: str(sp.perk_name),
       joinedAt: num(sp.joined_at),
-      maxWave: num(sp.max_wave),
+      maxWave,
       joinWave: num(sp.join_wave),
     };
   });

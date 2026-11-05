@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { LOCALES, i18n, setLocale, t, type Locale } from "./i18n";
 import { parseSearch } from "./lib/search";
+import { loadSteamUser, logoutSteam, profileTo, steamReady, steamUser } from "./lib/steam";
+import SteamMark from "./components/SteamMark.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -22,6 +24,14 @@ watch(
 function onLangChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value as Locale;
   if (LOCALES.includes(value)) setLocale(value);
+}
+
+onMounted(() => {
+  void loadSteamUser();
+});
+
+function onLogout(): void {
+  void logoutSteam();
 }
 
 async function onSearch(): Promise<void> {
@@ -93,6 +103,28 @@ async function onSearch(): Promise<void> {
           </button>
         </form>
         <div class="header-actions">
+          <template v-if="steamReady">
+            <a v-if="!steamUser?.loggedIn" class="header-steam" href="/api/stats/steam/login">
+              <SteamMark />
+              {{ t("nav.login") }}
+            </a>
+            <div v-else class="header-account">
+              <router-link class="header-account-profile" :to="profileTo">{{ t("nav.profile") }}</router-link>
+              <button
+                class="header-account-logout"
+                type="button"
+                :title="t('nav.logout')"
+                :aria-label="t('nav.logout')"
+                @click="onLogout"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+              </button>
+            </div>
+          </template>
           <a
             class="header-discord"
             href="https://discord.gg/MJXsav9DFC"
@@ -247,6 +279,78 @@ async function onSearch(): Promise<void> {
   text-decoration: none;
 }
 
+.header-steam {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  flex: none;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.header-steam:hover {
+  color: var(--text);
+  border-color: var(--accent-deep);
+  background: var(--panel);
+  text-decoration: none;
+}
+.header-steam svg { display: block; flex: none; }
+
+.header-account {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.header-account:hover { border-color: var(--accent-deep); }
+.header-account-profile {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.header-account-profile:hover {
+  color: var(--text);
+  background: var(--panel);
+  text-decoration: none;
+}
+.header-account-logout {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.header-account-logout:hover {
+  color: var(--accent-bright);
+  background: var(--panel);
+}
+
 .search {
   display: flex;
   align-items: center;
@@ -315,7 +419,7 @@ async function onSearch(): Promise<void> {
   .header-nav a { padding: 8px 10px; }
   .search { width: 100%; margin-left: 0; }
   .search input { flex: 1; width: auto; }
-  .header-actions { justify-content: space-between; }
+  .header-actions { justify-content: flex-start; flex-wrap: wrap; }
 }
 
 .footer {

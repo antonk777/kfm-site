@@ -4,11 +4,13 @@ Public download page for **KFM Companion** at [https://kf-maniacs.com/](https://
 
 | Piece | Role |
 |-------|------|
-| `index.html` | Landing page, EN/RU/ZH/ES/PT, server monitor, changelog |
+| `web/` | Vue 3 SPA (landing, `/players`, profiles); `npm run build` → `web/dist` |
+| `web/dist` | Public document root (gitignored); shipped by `deploy-site.py` / built by `deploy.sh` |
+| `index.html` | Legacy static landing — kept in the repo, **not** published to `SITE_ROOT` |
 | `maps/*.jpg` | Map previews for the monitor, from `tools/gen_map_shots.py` in kfm-mut |
 | `fetch-companion.mjs` | Pulls latest `.exe` from private `antonk777/KFMLauncher` releases |
 | `release.json` | Written at sync time; page reads `tag` / `file` / changelog |
-| `Caddyfile` | TLS, static files, forced download headers, JSON access log |
+| `Caddyfile` | TLS, SPA fallback, forced download headers, JSON access log |
 | `/download` | Stable Companion URL |
 | `sync-now.sh` | Forced-command entry for release sync |
 | GitHub Action on `KFMLauncher` | On every Release → SSH → `sync-now.sh` (instant) |
@@ -45,12 +47,13 @@ sudo systemctl enable --now kfm-site-sync.timer
 
 ## Server monitor on the landing page
 
-The first block of `index.html` lists the panel servers (Meat Grinder, Bloodbath):
-map preview, map name, difficulty, wave, players, a `steam://run/1250//<ip>:<game port>`
-button (Steam starts the game with the address on its command line; `steam://connect`
-fails for these servers) and a collapsible player list (names and perks, no steam ids). It polls the
-public `GET /api/stats/servers` every 10 s; the data is the same live push that feeds
-the `/statistics/` live card (`stale` = no push within 45 s, the card dims).
+The first block of the Vue landing (`web/src/views/LandingPage.vue`) lists the panel
+servers (Meat Grinder, Bloodbath): map preview, map name, difficulty, wave, players,
+a `steam://run/1250//<ip>:<game port>` button (Steam starts the game with the address
+on its command line; `steam://connect` fails for these servers) and a collapsible
+player list (names and perks, no steam ids). It polls the public `GET /api/stats/servers`
+every 10 s; the data is the same live push that feeds the `/statistics/` live card
+(`stale` = no push within 45 s, the card dims).
 
 The address line selects only the `ip:port`; a click copies it to the clipboard and
 shows a short "Copied" tooltip.
@@ -93,6 +96,23 @@ python -I tools/gen_map_shots.py            # same for the local KF install
 ```
 
 A map without a file shows the caption on a plain background.
+
+## Steam login in the header
+
+The Vue header has a Steam button (`GET /api/stats/steam/login`). It is Steam
+OpenID: the player approves on steamcommunity.com, `stats-server.py` checks the
+assertion, sets an HttpOnly `kfm_player` cookie (14 days), and redirects to
+`/players/<custom URL or SteamID64>`. While that cookie is valid the header
+shows **My profile** (from `GET /api/stats/steam/me`) and a logout
+(`POST /api/stats/steam/logout`). It does not grant access to `/statistics` —
+that dashboard still uses the separate admin password cookie.
+
+`SITE_PUBLIC_URL` (default `https://kf-maniacs.com`, no trailing path) is the
+OpenID realm and return URL. The cookie is signed with `STATS_ADMIN_SECRET`, or
+with `STEAM_WEB_API_KEY` when that secret is unset. If neither is set, the login
+route answers 503. Persona name and custom URL reuse the existing Web API
+lookup, so a missing key still logs the player in and sends them to
+`/players/<SteamID64>`.
 
 ## Download counts
 

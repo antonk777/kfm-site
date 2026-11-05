@@ -18,6 +18,8 @@ Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
   SITE_LOG      Caddy JSON access log (Companion download counts)
   DISCORD_INVITE  invite code behind the landing-page Discord card
                   (default MJXsav9DFC; empty turns the card's data off)
+  SITE_PUBLIC_URL public origin for Steam OpenID (default https://kf-maniacs.com)
+  STATS_ADMIN_SECRET or STEAM_WEB_API_KEY  signs the player login cookie
 """
 
 from __future__ import annotations
@@ -2351,6 +2353,144 @@ def _parse_cookies(header: str | None) -> dict[str, str]:
     return out
 
 
+# Header "Sign in with Steam" (OpenID 2.0). Separate from the admin cookie:
+# this only remembers which SteamID64 the browser proved, then the SPA links
+# to /players/<id>. SameSite=Lax so the cookie survives Steam's redirect back.
+PLAYER_COOKIE = "kfm_player"
+PLAYER_TTL_SEC = 60 * 60 * 24 * 14  # 14 days
+STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
+_OPENID_ID_RE = re.compile(
+    r"^https://steamcommunity\.com/openid/id/([0-9]{16,20})$"
+)
+
+
+def site_public_origin() -> str:
+    return (os.environ.get("SITE_PUBLIC_URL") or "https://kf-maniacs.com").strip().rstrip("/")
+
+
+def player_auth_secret() -> bytes:
+    """HMAC key for the player cookie. Prefer the admin secret, else the Web API key."""
+    raw = (os.environ.get("STATS_ADMIN_SECRET") or "").strip()
+    if raw:
+        return raw.encode("utf-8")
+    key = (os.environ.get("STEAM_WEB_API_KEY") or "").strip()
+    if not key:
+        return b""
+    return hashlib.sha256(("kfm-player|" + key).encode("utf-8")).digest()
+
+
+def player_auth_configured() -> bool:
+    return bool(player_auth_secret())
+
+
+def player_cookie_value(steamid: str, now: int | None = None) -> str:
+    exp = int(now if now is not None else time.time()) + PLAYER_TTL_SEC
+    msg = f"{steamid}.{exp}"
+    sig = hmac.new(player_auth_secret(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{msg}.{sig}"
+
+
+def player_cookie_steamid(token: str | None) -> str:
+    secret = player_auth_secret()
+    if not token or not secret:
+        return ""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return ""
+    steamid, exp_s, sig = parts
+    if not _STEAM_ID_RE.fullmatch(steamid):
+        return ""
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return ""
+    if exp < int(time.time()):
+        return ""
+    expect = hmac.new(secret, f"{steamid}.{exp_s}".encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expect, sig):
+        return ""
+    return steamid
+
+
+def steam_openid_login_url() -> str:
+    origin = site_public_origin()
+    params = {
+        "openid.ns": "http://specs.openid.net/auth/2.0",
+        "openid.mode": "checkid_setup",
+        "openid.return_to": origin + "/api/stats/steam/callback",
+        "openid.realm": origin,
+        "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+        "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+    }
+    return STEAM_OPENID_URL + "?" + urlencode(params)
+
+
+def steam_openid_verify(qs: dict[str, list[str]]) -> str:
+    """SteamID64 from a positive OpenID assertion, or "" when it does not check out."""
+
+    def one(key: str) -> str:
+        vals = qs.get(key) or [""]
+        return vals[0] if vals else ""
+
+    if one("openid.mode") != "id_res":
+        return ""
+    if one("openid.ns") != "http://specs.openid.net/auth/2.0":
+        return ""
+    if one("openid.op_endpoint") != STEAM_OPENID_URL:
+        return ""
+    expected = site_public_origin() + "/api/stats/steam/callback"
+    return_to = one("openid.return_to")
+    if return_to != expected and not return_to.startswith(expected + "?"):
+        return ""
+    claimed = _OPENID_ID_RE.fullmatch(one("openid.claimed_id"))
+    if not claimed or "claimed_id" not in one("openid.signed").split(","):
+        return ""
+    fields = [
+        (key, (vals[0] if vals else ""))
+        for key, vals in qs.items()
+        if key.startswith("openid.") and key != "openid.mode"
+    ]
+    fields.append(("openid.mode", "check_authentication"))
+    req = urllib.request.Request(
+        STEAM_OPENID_URL,
+        data=urlencode(fields).encode("utf-8"),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "kfm-stats/1.0 (https://kf-maniacs.com/)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read(16_384).decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        print(f"steam openid verify: {exc}", flush=True)
+        return ""
+    if "is_valid:true" not in text.replace(" ", ""):
+        return ""
+    return claimed.group(1)
+
+
+def player_profile_path(steamid: str) -> str:
+    """Site profile URL: custom Steam URL when Steam reports one, else SteamID64."""
+    info = _steam_summaries([steamid]).get(steamid) or {}
+    vanity = str(info.get("vanity") or "")
+    slug = vanity if re.fullmatch(r"[A-Za-z0-9_-]{2,32}", vanity) else steamid
+    return "/players/" + urllib.parse.quote(slug, safe="")
+
+
+def steam_me_payload(steamid: str) -> dict[str, Any]:
+    if not steamid:
+        return {"loggedIn": False, "steamId": "", "vanity": "", "name": ""}
+    info = _steam_summaries([steamid]).get(steamid) or {}
+    return {
+        "loggedIn": True,
+        "steamId": steamid,
+        "vanity": str(info.get("vanity") or ""),
+        "name": str(info.get("name") or ""),
+    }
+
+
 def _run_as_kfserver(
     argv: list[str],
     *,
@@ -3298,6 +3438,17 @@ def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]
                 "joinWave": int(r.get("join_wave") or 0),
             }
         )
+    # Boss is FinalWave+1 (site shows "Boss"). Old clears stored FinalWave+2;
+    # cap there so the UI can still tell boss from a squad-wave wipe.
+    for row in out:
+        fw = int(row.get("finalWave") or 0)
+        if fw <= 0:
+            continue
+        cap = fw + 1
+        if int(row.get("wave") or 0) > cap:
+            row["wave"] = cap
+        if int(row.get("maxWave") or 0) > cap:
+            row["maxWave"] = cap
     return out
 
 
@@ -3567,6 +3718,28 @@ class Handler(BaseHTTPRequestHandler):
         cookies = _parse_cookies(self.headers.get("Cookie"))
         return _auth_token_ok(cookies.get(ADMIN_COOKIE))
 
+    def _player_steamid(self) -> str:
+        cookies = _parse_cookies(self.headers.get("Cookie"))
+        return player_cookie_steamid(cookies.get(PLAYER_COOKIE))
+
+    def _player_cookie_header(self, value: str, max_age: int) -> str:
+        cookie = (
+            f"{PLAYER_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        )
+        if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+            cookie += "; Secure"
+        return cookie
+
+    def _redirect(self, location: str, extra_headers: list[tuple[str, str]] | None = None) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
+        for hk, hv in extra_headers or []:
+            self.send_header(hk, hv)
+        self.end_headers()
+
     def _require_auth(self) -> bool:
         if self._is_authed():
             return True
@@ -3730,6 +3903,26 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, {"error": "vanity not found"})
             return
+        if path == "/api/stats/steam/login":
+            if not player_auth_configured():
+                self._send(503, {"error": "steam login not configured"})
+                return
+            self._redirect(steam_openid_login_url())
+            return
+        if path == "/api/stats/steam/callback":
+            if not player_auth_configured():
+                self._send(503, {"error": "steam login not configured"})
+                return
+            steamid = steam_openid_verify(qs)
+            if not steamid:
+                self._redirect("/")
+                return
+            cookie = self._player_cookie_header(player_cookie_value(steamid), PLAYER_TTL_SEC)
+            self._redirect(player_profile_path(steamid), [("Set-Cookie", cookie)])
+            return
+        if path == "/api/stats/steam/me":
+            self._send(200, steam_me_payload(self._player_steamid()))
+            return
         if path == "/api/stats/avatar/full":
             steam = ((qs.get("steam") or [""])[0] or "").strip()
             blob = full_avatar_bytes(steam)
@@ -3883,6 +4076,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/stats/logout":
             cookie = f"{ADMIN_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
+            return
+
+        if path == "/api/stats/steam/logout":
+            cookie = self._player_cookie_header("", 0)
             self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
             return
 

@@ -57,15 +57,55 @@ if ! command -v node >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends nodejs
 fi
 
-echo "==> sync static files -> ${SITE_ROOT}"
+echo "==> sync public files -> ${SITE_ROOT}"
 mkdir -p "${SITE_ROOT}" "$(dirname "${SITE_LOG}")" /var/lib/kfm-site
 # Caddy runs as user `caddy` and must own its log directory.
 if id caddy >/dev/null 2>&1; then
   chown -R caddy:caddy "$(dirname "${SITE_LOG}")"
 fi
-install -m 644 "${SCRIPT_DIR}/index.html" "${SITE_ROOT}/index.html"
-install -m 644 "${SCRIPT_DIR}/favicon.ico" "${SITE_ROOT}/favicon.ico"
-install -m 644 "${SCRIPT_DIR}/kf-maniacs-logo.svg" "${SITE_ROOT}/kf-maniacs-logo.svg"
+
+# Public root is the Vue build (web/dist), not the legacy site/index.html.
+# Prefer a dist already present (deploy-site.py ships one). Otherwise build here.
+DIST_DIR="${SCRIPT_DIR}/web/dist"
+if [ ! -f "${DIST_DIR}/index.html" ]; then
+  if [ ! -f "${SCRIPT_DIR}/web/package.json" ]; then
+    echo "Missing web/package.json and web/dist; cannot publish the site." >&2
+    exit 1
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "==> install npm (Vue build)"
+    apt-get update -y
+    apt-get install -y --no-install-recommends npm
+  fi
+  echo "==> build Vue site (web/)"
+  if [ ! -d "${SCRIPT_DIR}/web/node_modules" ]; then
+    (cd "${SCRIPT_DIR}/web" && npm ci)
+  fi
+  (cd "${SCRIPT_DIR}/web" && npm run build)
+fi
+if [ ! -f "${DIST_DIR}/index.html" ]; then
+  echo "web/dist/index.html missing after build" >&2
+  exit 1
+fi
+
+# Install every file from dist/, then map previews. Prune stale hashed assets.
+while IFS= read -r -d '' f; do
+  rel="${f#"${DIST_DIR}"/}"
+  install -D -m 644 "$f" "${SITE_ROOT}/${rel}"
+done < <(find "${DIST_DIR}" -type f -print0 | sort -z)
+if [ -d "${SITE_ROOT}/assets" ]; then
+  while IFS= read -r -d '' f; do
+    rel="${f#"${SITE_ROOT}"/}"
+    if [ ! -f "${DIST_DIR}/${rel}" ]; then
+      rm -f "$f"
+    fi
+  done < <(find "${SITE_ROOT}/assets" -type f -print0)
+  find "${SITE_ROOT}/assets" -type d -empty -delete 2>/dev/null || true
+fi
+# Legacy landing put the logo at site root; Vue serves /assets/kf-maniacs-logo.svg.
+if [ -f "${SITE_ROOT}/kf-maniacs-logo.svg" ] && [ ! -f "${DIST_DIR}/kf-maniacs-logo.svg" ]; then
+  rm -f "${SITE_ROOT}/kf-maniacs-logo.svg"
+fi
 mkdir -p "${SITE_ROOT}/maps"
 for f in "${SCRIPT_DIR}"/maps/*.jpg; do
   [ -f "$f" ] && install -m 644 "$f" "${SITE_ROOT}/maps/$(basename "$f")"

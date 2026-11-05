@@ -5,6 +5,8 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { t } from "../i18n";
 import { prettyMap } from "../lib/format";
+import { profileTo, steamUser } from "../lib/steam";
+import SteamMark from "../components/SteamMark.vue";
 
 interface LivePlayer {
   name: string;
@@ -257,6 +259,17 @@ onUnmounted(() => {
       </article>
     </section>
 
+    <!-- statistics -->
+    <h2 class="section-title">{{ t("stats.section") }}</h2>
+    <section class="panel stats-gate">
+      <a v-if="!steamUser?.loggedIn" class="stats-login" href="/api/stats/steam/login">
+        <SteamMark />
+        {{ t("nav.login") }}
+      </a>
+      <router-link v-else class="stats-login" :to="profileTo">{{ t("nav.profile") }}</router-link>
+      <p>{{ steamUser?.loggedIn ? t("stats.openHint") : t("stats.loginHint") }}</p>
+    </section>
+
     <!-- discord -->
     <h2 class="section-title">{{ t("srv.discord") }}</h2>
     <p v-if="!discord" class="empty-note">
@@ -455,6 +468,43 @@ onUnmounted(() => {
   border-radius: 3px;
   white-space: nowrap;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.stats-gate {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 22px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.stats-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+  border: 1px solid #7d2023;
+  border-radius: 4px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.stats-login:hover {
+  color: #fff;
+  text-decoration: none;
+  filter: brightness(1.12);
+}
+.stats-gate p {
+  margin: 0;
+  max-width: 36em;
+  color: var(--text-dim);
+  font-size: 14px;
 }
 
 .discord-card {
