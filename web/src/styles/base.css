@@ -20,10 +20,10 @@
   --gold-bright: #e8b53c;
   --green: #8fd16a;
   --blue: #5cc8e6;
-  /* Bebas Neue covers Latin only; Oswald (self-hosted, Latin+Cyrillic) takes
-     over for Russian, and system CJK fonts for Chinese. Fallback works
-     per-glyph, so one stack serves all five site languages. */
-  --font-display: "Bebas Neue", "Oswald", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Arial Narrow", sans-serif;
+  /* Oswald is the single display font for every language: it has Latin,
+     Cyrillic and Vietnamese, so mixed-script text never switches families.
+     System CJK fonts cover Chinese. */
+  --font-display: "Oswald", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Arial Narrow", sans-serif;
   --font-body: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
 }
 
