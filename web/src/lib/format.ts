@@ -47,6 +47,11 @@ export function prettyMap(name: string): string {
 // before that keep the old name on the site.
 export const BRUTAL_RENAMED_AT = 1793275980;
 
+// Status titles and flavour text need the scoreboard counters recorded with
+// this version (kills, healing, donations, and the rest). Sessions that
+// started before 7 Nov 2026 00:00 UTC do not have them.
+export const SESSION_STATUS_SINCE = 1_794_009_600;
+
 export function difficultyName(n: number, at?: number): string {
   if (n <= 0) return "";
   if (n >= 8) return at !== undefined && at < BRUTAL_RENAMED_AT ? "Underworld" : "Brutal";
@@ -55,4 +60,15 @@ export function difficultyName(n: number, at?: number): string {
   if (n >= 4) return "Hard";
   if (n >= 2) return "Normal";
   return "Beginner";
+}
+
+// Same steps as difficultyName, as the stored tier (8 Brutal, 7 HoE, …).
+export function difficultyBucket(n: number): number {
+  if (n >= 8) return 8;
+  if (n >= 7) return 7;
+  if (n >= 5) return 5;
+  if (n >= 4) return 4;
+  if (n >= 2) return 2;
+  if (n > 0) return 1;
+  return 0;
 }

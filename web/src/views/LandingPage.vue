@@ -3,14 +3,26 @@
 // server monitor + Discord card (live data from the production stats API),
 // Companion download block and release notes.
 import { onMounted, onUnmounted, ref } from "vue";
+import { RouterLink } from "vue-router";
+import { fetchRecentSessions, SESSION_PREVIEW_LIMIT, type RecentSessionInfo } from "../api";
 import { t } from "../i18n";
 import { prettyMap } from "../lib/format";
+import { SESSIONS_PUBLIC } from "../lib/flags";
+import { PERK_IDS, canonPerkId } from "../lib/perkLevel";
 import { profileTo, steamUser } from "../lib/steam";
+import DifficultyLabel from "../components/DifficultyLabel.vue";
+import PerkIcon from "../components/PerkIcon.vue";
+import SessionTable from "../components/SessionTable.vue";
 import SteamMark from "../components/SteamMark.vue";
 
 interface LivePlayer {
   name: string;
   perk: string;
+  perkIdx?: number;
+  perkLevel?: number;
+  prestigeRank?: number;
+  steamId?: string;
+  steam?: string;
 }
 
 interface ServerInfo {
@@ -27,6 +39,8 @@ interface ServerInfo {
   maxPlayers: number;
   players: LivePlayer[];
   stale: boolean;
+  // Open map on this slot. Missing on older monitor payloads.
+  sessionId?: number;
 }
 
 interface DiscordInfo {
@@ -49,40 +63,94 @@ interface ReleaseInfo {
 
 const servers = ref<ServerInfo[] | null>(null);
 const serversFailed = ref(false);
+const sessions = ref<RecentSessionInfo[] | null>(null);
+const sessionsFailed = ref(false);
 const discord = ref<DiscordInfo | null>(null);
 const discordFailed = ref(false);
 const openLists = ref(new Set<string>());
+const avatarFailed = ref<Record<string, boolean>>({});
 const copiedIp = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const release = ref<ReleaseInfo | null>(null);
 const changelogText = ref("");
 
 let serversTimer: ReturnType<typeof setInterval> | undefined;
+let sessionsTimer: ReturnType<typeof setInterval> | undefined;
 let discordTimer: ReturnType<typeof setInterval> | undefined;
 
-function difficultyName(d: number): string {
-  if (!Number.isFinite(d) || d <= 0) return "";
-  if (d >= 8) return t("diff.brutal");
-  if (d >= 7) return t("diff.hoe");
-  if (d >= 5) return t("diff.suicidal");
-  if (d >= 4) return t("diff.hard");
-  if (d >= 2) return t("diff.normal");
-  return t("diff.beginner");
+function waveCaption(srv: ServerInfo): string {
+  if (srv.finalWave > 0 && srv.wave > srv.finalWave) return t("srv.bossWave");
+  if (srv.wave > 0) return `${t("srv.wave")} ${srv.wave}${srv.finalWave > 0 ? " / " + srv.finalWave : ""}`;
+  return "";
 }
 
-function subText(srv: ServerInfo): string {
-  const parts: string[] = [];
-  const diff = difficultyName(srv.difficulty);
-  if (diff) parts.push(diff);
-  if (srv.finalWave > 0 && srv.wave > srv.finalWave) parts.push(t("srv.bossWave"));
-  else if (srv.wave > 0) parts.push(`${t("srv.wave")} ${srv.wave}${srv.finalWave > 0 ? " / " + srv.finalWave : ""}`);
-  return parts.join(" · ");
+function perkId(p: LivePlayer): string {
+  const idx = p.perkIdx;
+  if (typeof idx === "number" && idx >= 0 && idx < PERK_IDS.length) return PERK_IDS[idx];
+  return canonPerkId(p.perk || "");
+}
+
+function perkLevelOf(p: LivePlayer): number | null {
+  return typeof p.perkLevel === "number" && p.perkLevel >= 0 ? p.perkLevel : null;
+}
+
+function perkTitle(p: LivePlayer): string {
+  const id = perkId(p);
+  let name = p.perk || "";
+  if (id) {
+    const key = `perk.${id}`;
+    const label = t(key);
+    name = label === key ? id.replace(/_/g, " ") : label;
+  }
+  const level = perkLevelOf(p);
+  if (level === null) return name;
+  return level >= 9 ? `${name} · MANIAC` : `${name} · ${level}`;
+}
+
+function steamOf(p: LivePlayer): string {
+  const id = (p.steamId || p.steam || "").trim();
+  return /^\d{16,20}$/.test(id) ? id : "";
+}
+
+function playerTo(p: LivePlayer): string {
+  const id = steamOf(p);
+  return id ? `/players/${id}` : "";
+}
+
+function avatarUrl(p: LivePlayer): string {
+  const id = steamOf(p);
+  return id && !avatarFailed.value[id] ? `/api/stats/avatar/full?steam=${id}` : "";
+}
+
+function markAvatarFailed(p: LivePlayer): void {
+  const id = steamOf(p);
+  if (!id || avatarFailed.value[id]) return;
+  avatarFailed.value = { ...avatarFailed.value, [id]: true };
 }
 
 function joinUrl(srv: ServerInfo): string {
   return typeof srv.steam === "string" && srv.steam
     ? srv.steam
     : `steam://run/1250//${srv.host}:${srv.port}`;
+}
+
+function sameServer(srv: ServerInfo, name: string): boolean {
+  const want = name.trim().toLowerCase();
+  if (!want) return false;
+  const label = (srv.label || "").trim().toLowerCase();
+  const id = (srv.id || "").trim().toLowerCase();
+  return want === label || want === id || want.replace(/\s+/g, "") === label.replace(/\s+/g, "");
+}
+
+function sessionHref(srv: ServerInfo): string {
+  if (!SESSIONS_PUBLIC || !srv.map) return "";
+  if (typeof srv.sessionId === "number") {
+    return srv.sessionId > 0 ? `/sessions/${srv.sessionId}` : "";
+  }
+  const live = (sessions.value ?? []).find(
+    (s) => s.outcome === "playing" && s.id > 0 && sameServer(srv, s.server),
+  );
+  return live ? `/sessions/${live.id}` : "";
 }
 
 function togglePlayers(id: string): void {
@@ -137,6 +205,16 @@ async function pollServers(): Promise<void> {
   }
 }
 
+async function pollSessions(): Promise<void> {
+  try {
+    // Wider than the five-row preview so a long match still matches its server card.
+    sessions.value = await fetchRecentSessions(40);
+    sessionsFailed.value = false;
+  } catch {
+    if (!sessions.value) sessionsFailed.value = true;
+  }
+}
+
 async function pollDiscord(): Promise<void> {
   try {
     const res = await fetch("/api/stats/discord", { cache: "no-store" });
@@ -165,11 +243,16 @@ function releaseNotes(raw: string): string {
 function onVisible(): void {
   if (document.hidden) return;
   pollServers();
+  if (SESSIONS_PUBLIC) pollSessions();
   pollDiscord();
 }
 
 onMounted(() => {
   pollServers();
+  if (SESSIONS_PUBLIC) {
+    pollSessions();
+    sessionsTimer = setInterval(pollSessions, 60000);
+  }
   pollDiscord();
   serversTimer = setInterval(pollServers, 10000);
   discordTimer = setInterval(pollDiscord, 60000);
@@ -187,6 +270,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (serversTimer) clearInterval(serversTimer);
+  if (sessionsTimer) clearInterval(sessionsTimer);
   if (discordTimer) clearInterval(discordTimer);
   document.removeEventListener("visibilitychange", onVisible);
 });
@@ -220,7 +304,12 @@ onUnmounted(() => {
           </span>
           <div class="caption">
             <span class="map">{{ srv.map ? prettyMap(srv.map) : t("srv.offline") }}</span>
-            <small class="sub">{{ subText(srv) }}</small>
+            <small class="sub">
+              <DifficultyLabel v-if="srv.difficulty > 0" :level="srv.difficulty" />
+              <template v-if="waveCaption(srv)">
+                <template v-if="srv.difficulty > 0"> · </template>{{ waveCaption(srv) }}
+              </template>
+            </small>
           </div>
         </div>
         <p class="server-meta">
@@ -236,15 +325,33 @@ onUnmounted(() => {
         </p>
         <div class="server-actions">
           <a class="join" :href="joinUrl(srv)" rel="noopener">{{ t("srv.join") }}</a>
+          <router-link v-if="sessionHref(srv)" class="session" :to="sessionHref(srv)">{{ t("srv.session") }}</router-link>
           <button type="button" class="plist-toggle" @click="togglePlayers(srv.id)">
             {{ t("srv.players") }} · {{ srv.online }}
           </button>
         </div>
         <ul v-if="openLists.has(srv.id)" class="plist">
           <li v-if="!srv.players.length" class="empty">{{ t("srv.noPlayers") }}</li>
-          <li v-for="(p, i) in srv.players" :key="i">
-            <span>{{ p.name || "???" }}</span>
-            <span v-if="p.perk" class="perk">{{ p.perk }}</span>
+          <li v-for="(p, i) in srv.players" :key="steamOf(p) || `${srv.id}-${i}`">
+            <component
+              :is="playerTo(p) ? RouterLink : 'div'"
+              class="plist-player"
+              v-bind="playerTo(p) ? { to: playerTo(p) } : {}"
+            >
+              <span class="avatar" :class="{ placeholder: !avatarUrl(p) }">
+                <img v-if="avatarUrl(p)" :src="avatarUrl(p)" alt="" @error="markAvatarFailed(p)" />
+                <img v-else class="ph" src="/assets/avatar-skull.svg" alt="" />
+              </span>
+              <span class="name">{{ p.name || "???" }}</span>
+              <PerkIcon
+                v-if="perkId(p) || perkLevelOf(p) !== null"
+                :perk="perkId(p) || p.perk"
+                :level="perkLevelOf(p)"
+                :prestige-rank="p.prestigeRank ?? 0"
+                :size="26"
+                :title="perkTitle(p)"
+              />
+            </component>
           </li>
         </ul>
         <p class="server-addr">
@@ -291,6 +398,21 @@ onUnmounted(() => {
         {{ t("srv.discordJoin") }}
       </a>
     </article>
+
+    <!-- five newest sessions; the rest live on /sessions -->
+    <template v-if="SESSIONS_PUBLIC">
+      <h2 class="section-title">{{ t("sessions.title") }}</h2>
+      <p v-if="!sessions" class="empty-note">
+        {{ sessionsFailed ? t("sessions.unavailable") : t("srv.loading") }}
+      </p>
+      <p v-else-if="!sessions.length" class="empty-note">{{ t("sessions.empty") }}</p>
+      <template v-else>
+        <SessionTable :sessions="sessions.slice(0, SESSION_PREVIEW_LIMIT)" />
+        <p class="sessions-more">
+          <router-link class="sessions-cta" to="/sessions">{{ t("sessions.seeAll") }}</router-link>
+        </p>
+      </template>
+    </template>
 
     <!-- companion copy -->
     <section class="copy panel">
@@ -417,22 +539,27 @@ onUnmounted(() => {
 
 .server-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 8px 10px 0;
 }
-.server-actions a.join {
-  flex: 1;
+.server-actions a.join,
+.server-actions a.session {
+  flex: 1 1 auto;
   text-align: center;
   font-family: var(--font-display);
   font-size: 16px;
   letter-spacing: 0.064em;
   text-transform: uppercase;
   color: var(--text);
+  text-decoration: none;
   background: var(--panel-2);
   border: 1px solid var(--border-bright);
   padding: 5px 10px 3px;
+  white-space: nowrap;
 }
-.server-actions a.join:hover { text-decoration: none; border-color: var(--accent-deep); color: #fff; }
+.server-actions a.join:hover,
+.server-actions a.session:hover { text-decoration: none; border-color: var(--accent-deep); color: #fff; }
 .server-actions button.plist-toggle {
   appearance: none;
   background: transparent;
@@ -446,15 +573,68 @@ onUnmounted(() => {
 .server-actions button.plist-toggle::after { content: " ▸"; color: var(--text-faint); }
 .server-card.open button.plist-toggle::after { content: " ▾"; }
 
-.plist { margin: 8px 10px 0; padding: 6px 8px; list-style: none; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--border); font-size: 12.5px; }
-.plist li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.plist {
+  margin: 8px 10px 0;
+  padding: 4px;
+  list-style: none;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+.plist li { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
 .plist li:last-child { border-bottom: 0; }
-.plist .perk { color: var(--green); white-space: nowrap; }
-.plist .empty { color: var(--text-faint); }
+.plist-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+a.plist-player:hover {
+  background: rgba(255, 255, 255, 0.045);
+  color: #fff;
+  text-decoration: none;
+}
+.plist .avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--border);
+  background: #0b0b0e;
+  overflow: hidden;
+}
+.plist .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.plist .avatar .ph { width: auto; height: 78%; margin: 0; object-fit: contain; opacity: 0.82; }
+.plist .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
+.plist .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plist .empty { color: var(--text-faint); padding: 6px 8px; }
 
 .server-addr { margin: 8px 10px 12px; font-size: 12px; color: var(--text-dim); }
 .server-addr .lbl { margin-right: 4px; }
 .server-addr .ip { position: relative; color: var(--text); cursor: pointer; border-bottom: 1px dotted var(--border-bright); }
+.sessions-more { text-align: center; margin: 16px 0 0; }
+.sessions-cta {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+  background: linear-gradient(180deg, #2a1214, #1a0c0e);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 16px rgba(198, 18, 23, 0.28);
+  padding: 8px 18px 6px;
+}
+.sessions-cta:hover { text-decoration: none; filter: brightness(1.15); border-color: var(--accent-bright); }
+
 .server-addr .ip.copied::after {
   content: attr(data-tip);
   position: absolute;

@@ -63,11 +63,11 @@ function onAvatarError(r: TopPlayerEntry): void {
                   @error="onAvatarError(r)"
                 />
                 <span v-else class="top-avatar top-avatar-empty">
-                  <img src="/assets/skull.svg" alt="" />
+                  <img src="/assets/avatar-skull.svg" alt="" />
                 </span>
                 <span class="top-name">{{ r.name }}</span>
                 <span v-if="r.admin" class="top-admin">{{ t("hero.admin") }}</span>
-                <span v-if="r.veteran" class="top-veteran">{{ t("hero.veteran") }}</span>
+                <span v-if="r.veteran" class="top-veteran" :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
               </div>
             </td>
             <td class="top-score">{{ fmtNum(r.score) }}</td>
@@ -118,10 +118,10 @@ function onAvatarError(r: TopPlayerEntry): void {
   background: radial-gradient(circle at 50% 40%, #1c1c24, #0c0c10);
 }
 .top-avatar-empty img {
-  width: 60%;
-  height: 60%;
+  width: auto;
+  height: 72%;
   object-fit: contain;
-  opacity: 0.4;
+  opacity: 0.82;
 }
 .top-name { color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .top-admin {

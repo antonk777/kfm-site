@@ -10,8 +10,9 @@ import {
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 
-import { buildPlayer, getStore, loadStore, topPlayers } from "./scripts/data";
+import { buildPlayer, getStore, livePerkStanding, loadStore, recentSessions, sessionDetail, topPlayers } from "./scripts/data";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_DIR = join(ROOT, "public");
@@ -157,6 +158,76 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.end(data);
 }
 
+// The public monitor left steam ids out until stats-server sends them. Until
+// that build is what the tunnel returns, a missing id is filled from the
+// local session snapshot when the display name belongs to exactly one player.
+let steamByName: Map<string, string> | null = null;
+
+function steamForLiveName(name: string): string {
+  const key = name.trim();
+  if (!key) return "";
+  if (!steamByName) {
+    const map = new Map<string, string>();
+    try {
+      const raw = gunzipSync(readFileSync(join(ROOT, "data", "site_session_players.json.gz")));
+      const rows = JSON.parse(raw.toString("utf8")) as { name?: string; steam_id?: string }[];
+      const grouped = new Map<string, Set<string>>();
+      for (const row of rows) {
+        const n = String(row.name || "").trim();
+        const id = String(row.steam_id || "").trim();
+        if (!n || !/^\d{16,20}$/.test(id)) continue;
+        const set = grouped.get(n) ?? new Set<string>();
+        set.add(id);
+        grouped.set(n, set);
+      }
+      for (const [n, set] of grouped) {
+        if (set.size === 1) map.set(n, [...set][0]);
+      }
+    } catch {
+      // Snapshot missing: the list still renders, without avatars or links.
+    }
+    steamByName = map;
+  }
+  return steamByName.get(key) ?? "";
+}
+
+function attachLiveSteam(data: unknown): unknown {
+  const servers = (data as { servers?: { players?: Record<string, unknown>[] }[] } | null)?.servers;
+  if (!Array.isArray(servers)) return data;
+  for (const srv of servers) {
+    for (const p of srv.players ?? []) {
+      const existing = String(p.steamId || p.steam || "").trim();
+      if (/^\d{16,20}$/.test(existing)) p.steamId = existing;
+      else {
+        const id = steamForLiveName(String(p.name || ""));
+        if (id) p.steamId = id;
+      }
+      if (typeof p.perkLevel === "number") continue;
+      try {
+        const standing = livePerkStanding(String(p.steamId || ""), Number(p.perkIdx), String(p.perk || ""));
+        if (!standing) continue;
+        p.perkLevel = standing.level;
+        if (standing.prestigeRank > 0) p.prestigeRank = standing.prestigeRank;
+      } catch {
+        // Snapshot not loaded: the row still renders, without a level.
+      }
+    }
+  }
+  return data;
+}
+
+async function liveMonitor(pathname: string): Promise<unknown | null> {
+  for (const base of ["http://127.0.0.1:18765", "https://kfm.manul.lol"]) {
+    try {
+      const res = await fetch(`${base}${pathname}`, { signal: AbortSignal.timeout(6000) });
+      if (res.ok) return await res.json();
+    } catch {
+      // Tunnel down, or the public site unreachable: try the next source.
+    }
+  }
+  return null;
+}
+
 function devApi(): Plugin {
   return {
     name: "kfm-dev-api",
@@ -181,14 +252,16 @@ function devApi(): Plugin {
         }
 
         if (pathname === "/api/stats/servers" || pathname === "/api/stats/discord") {
-          // Live data from the production stats API through the local SSH
-          // tunnel (ssh -L 18765:127.0.0.1:8765 root@VPS). The landing shows
-          // its usual "unavailable" state when the tunnel is down.
-          fetch(`http://127.0.0.1:18765${pathname}`, { signal: AbortSignal.timeout(6000) })
-            .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+          // Live data from the production stats API. Prefer the local SSH
+          // tunnel (ssh -L 18765:127.0.0.1:8765 root@VPS); the public site
+          // is the same payload when the tunnel is down.
+          liveMonitor(pathname)
             .then((data) => {
-              if (data) sendJson(res, 200, data);
-              else sendJson(res, 502, { error: "tunnel unavailable" });
+              if (!data) {
+                sendJson(res, 502, { error: "tunnel unavailable" });
+                return;
+              }
+              sendJson(res, 200, pathname.endsWith("/servers") ? attachLiveSteam(data) : data);
             })
             .catch(() => sendJson(res, 502, { error: "tunnel unavailable" }));
           return;
@@ -209,6 +282,36 @@ function devApi(): Plugin {
         if (pathname === "/api/dev/reload") {
           loadStore(ROOT, PUBLIC_DIR);
           sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        // Recent map sessions for the landing page (local snapshot).
+        if (pathname === "/api/stats/sessions") {
+          try {
+            const limit = Math.min(2000, Math.max(1, Number(url.searchParams.get("limit")) || 30));
+            sendJson(res, 200, recentSessions(getStore(), limit));
+          } catch (err) {
+            sendJson(res, 500, { error: String(err) });
+          }
+          return;
+        }
+
+        if (pathname.startsWith("/api/stats/sessions/")) {
+          try {
+            const sid = Number(pathname.slice("/api/stats/sessions/".length).replace(/\/$/, ""));
+            if (!Number.isInteger(sid) || sid <= 0) {
+              sendJson(res, 404, { found: false, error: "not found" });
+              return;
+            }
+            const payload = sessionDetail(getStore(), sid);
+            if (!payload) {
+              sendJson(res, 404, { found: false, error: "not found" });
+              return;
+            }
+            sendJson(res, 200, payload);
+          } catch (err) {
+            sendJson(res, 500, { error: String(err) });
+          }
           return;
         }
 

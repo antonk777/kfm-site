@@ -6,9 +6,13 @@ import { join, resolve } from "node:path";
 
 import type {
   AchievementInfo,
+  ClearDifficulty,
   ClearInfo,
   PerkInfo,
   PlayerPayload,
+  RecentSessionInfo,
+  SessionDetailInfo,
+  SessionDetailPlayer,
   SessionInfo,
   TopPlayerEntry,
 } from "../src/api";
@@ -23,7 +27,8 @@ import {
   type PrestigeRow,
 } from "../src/lib/perks";
 import { ACHIEVEMENTS } from "../src/data/achievements";
-import { prettyMap } from "../src/lib/format";
+import { BRUTAL_RENAMED_AT, difficultyBucket, prettyMap } from "../src/lib/format";
+import { SESSIONS_PUBLIC, SESSIONS_VISIBLE_SINCE } from "../src/lib/flags";
 
 type Row = Record<string, unknown>;
 
@@ -48,12 +53,37 @@ const SERVER_LABELS: Record<string, string> = {
   suicidal: "Suicidal",
   bloodbath: "Bloodbath",
 };
+// Live slots plus retired ids. Same set stats-server uses for «Все».
+const KNOWN_SERVERS = new Set([
+  "meatgrinder",
+  "hard",
+  "suicidal",
+  "bloodbath",
+  ...Object.keys(SERVER_ALIASES),
+]);
 
 function serverLabel(raw: unknown): string {
   const s = str(raw).trim().toLowerCase();
   if (!s) return "";
   const canon = SERVER_ALIASES[s] ?? s;
   return SERVER_LABELS[canon] ?? canon;
+}
+
+// Game ports match stats-server SLOT_PORTS. Hard has none.
+const SERVER_PORTS: Record<string, number> = {
+  meatgrinder: 7717,
+  suicidal: 7727,
+  bloodbath: 7737,
+};
+const KF_APP_ID = 1250;
+
+function sessionJoinUrl(raw: unknown, outcome: string, endedAt: number): string {
+  if (outcome !== "playing" || endedAt > 0) return "";
+  const canon = SERVER_ALIASES[str(raw).trim().toLowerCase()] ?? str(raw).trim().toLowerCase();
+  const port = SERVER_PORTS[canon] ?? 0;
+  if (port <= 0) return "";
+  const host = process.env.KFM_PUBLIC_HOST || process.env.SITE_IP || "85.192.30.108";
+  return `steam://run/${KF_APP_ID}//${host}:${port}`;
 }
 
 function num(v: unknown, d = 0): number {
@@ -74,7 +104,10 @@ interface Store {
   achByAccount: Map<number, Map<number, number>>;
   bansByAccount: Map<number, Row[]>;
   sessionsBySteam: Map<string, Row[]>;
+  playersBySession: Map<number, Row[]>;
   clearsBySteam: Map<string, Row[]>;
+  clearEventsBySteam: Map<string, Row[]>;
+  sessionByKey: Map<string, Row>;
   mapSessionById: Map<number, Row>;
   scoreRank: Map<number, number>; // account id -> rank among non-admin players
   rankedCount: number;
@@ -88,6 +121,12 @@ function readTable(dataDir: string, name: string): Row[] {
   return JSON.parse(raw.toString("utf8")) as Row[];
 }
 
+function readTableMaybe(dataDir: string, name: string): Row[] {
+  const path = join(dataDir, `${name}.json.gz`);
+  if (!existsSync(path)) return [];
+  return readTable(dataDir, name);
+}
+
 export function loadStore(rootDir: string, publicDir: string): Store {
   const dataDir = join(rootDir, "data");
   const players = readTable(dataDir, "players");
@@ -97,6 +136,7 @@ export function loadStore(rootDir: string, publicDir: string): Store {
   const mapSessions = readTable(dataDir, "site_map_sessions");
   const sessionPlayers = readTable(dataDir, "site_session_players");
   const clears = readTable(dataDir, "site_player_map_clears");
+  const clearEvents = readTableMaybe(dataDir, "site_player_map_clear_events");
 
   const playersBySteam = new Map<string, Row>();
   const playersById = new Map<number, Row>();
@@ -129,14 +169,24 @@ export function loadStore(rootDir: string, publicDir: string): Store {
   }
 
   const mapSessionById = new Map<number, Row>();
-  for (const s of mapSessions) mapSessionById.set(num(s.id), s);
+  const sessionByKey = new Map<string, Row>();
+  for (const s of mapSessions) {
+    mapSessionById.set(num(s.id), s);
+    const key = str(s.session_key);
+    if (key) sessionByKey.set(key, s);
+  }
 
   const sessionsBySteam = new Map<string, Row[]>();
+  const playersBySession = new Map<number, Row[]>();
   for (const sp of sessionPlayers) {
     const steam = str(sp.steam_id).trim();
-    if (!steam) continue;
-    if (!sessionsBySteam.has(steam)) sessionsBySteam.set(steam, []);
-    sessionsBySteam.get(steam)!.push(sp);
+    if (steam) {
+      if (!sessionsBySteam.has(steam)) sessionsBySteam.set(steam, []);
+      sessionsBySteam.get(steam)!.push(sp);
+    }
+    const sid = num(sp.session_id);
+    if (!playersBySession.has(sid)) playersBySession.set(sid, []);
+    playersBySession.get(sid)!.push(sp);
   }
 
   const clearsBySteam = new Map<string, Row[]>();
@@ -145,6 +195,14 @@ export function loadStore(rootDir: string, publicDir: string): Store {
     if (!steam) continue;
     if (!clearsBySteam.has(steam)) clearsBySteam.set(steam, []);
     clearsBySteam.get(steam)!.push(c);
+  }
+
+  const clearEventsBySteam = new Map<string, Row[]>();
+  for (const e of clearEvents) {
+    const steam = str(e.steam_id).trim();
+    if (!steam) continue;
+    if (!clearEventsBySteam.has(steam)) clearEventsBySteam.set(steam, []);
+    clearEventsBySteam.get(steam)!.push(e);
   }
 
   // Rank among players who played since the 2026 relaunch (admins included —
@@ -166,7 +224,10 @@ export function loadStore(rootDir: string, publicDir: string): Store {
     achByAccount,
     bansByAccount,
     sessionsBySteam,
+    playersBySession,
     clearsBySteam,
+    clearEventsBySteam,
+    sessionByKey,
     mapSessionById,
     scoreRank,
     rankedCount: scored.length,
@@ -212,6 +273,37 @@ function baselinesOf(prestiges: (PrestigeRow | undefined)[]): (number | undefine
     out[idx] = slot.col === "a" ? p.baselineA : p.baselineB;
   });
   return out;
+}
+
+const PERK_INDEX_BY_NAME: Record<string, number> = {
+  fieldmedic: 0,
+  supportspecialist: 1,
+  sharpshooter: 2,
+  commando: 3,
+  berserker: 4,
+  firebug: 5,
+  demolition: 6,
+  demolitions: 6,
+};
+
+// Level of the perk a live player is on, same numbers as their profile.
+// perkIdx wins; the name covers a monitor payload that only has the perk text.
+export function livePerkStanding(
+  steamId: string,
+  perkIdx: number,
+  perkName: string,
+): { level: number; prestigeRank: number } | null {
+  if (!/^\d{16,20}$/.test(steamId)) return null;
+  const player = getStore().playersBySteam.get(steamId);
+  if (!player) return null;
+  let idx = perkIdx;
+  if (!Number.isInteger(idx) || idx < 0 || idx > 6) {
+    idx = PERK_INDEX_BY_NAME[perkName.toLowerCase().replace(/[\s_]+/g, "")] ?? -1;
+  }
+  if (idx < 0) return null;
+  const perk = buildPerks(player, prestigesFor(getStore(), num(player.id))).find((row) => row.index === idx);
+  if (!perk) return null;
+  return { level: perk.level, prestigeRank: perk.prestigeRank };
 }
 
 function buildPerks(player: Row, prestiges: (PrestigeRow | undefined)[]): PerkInfo[] {
@@ -272,6 +364,29 @@ function activeBan(s: Store, accountId: number): Row | null {
   return best;
 }
 
+function clearDifficulties(s: Store, steamId: string, mapKey: string): ClearDifficulty[] {
+  const slots = new Map<number, ClearDifficulty>();
+  for (const e of s.clearEventsBySteam.get(steamId) ?? []) {
+    if (str(e.map_name).toLowerCase() !== mapKey) continue;
+    let d = num(e.difficulty);
+    if (d <= 0) {
+      const ms = s.sessionByKey.get(str(e.session_key));
+      if (ms) d = num(ms.difficulty);
+    }
+    const bucket = difficultyBucket(d);
+    if (bucket <= 0) continue;
+    const at = num(e.cleared_at);
+    // Underworld and Brutal are the same tier; keep the name from the clear date.
+    const era = bucket >= 8 && at > 0 && at < BRUTAL_RENAMED_AT ? 0 : 1;
+    const slotKey = bucket * 2 + era;
+    const slot = slots.get(slotKey) ?? { difficulty: bucket, count: 0, lastAt: 0 };
+    slot.count += 1;
+    if (at > slot.lastAt) slot.lastAt = at;
+    slots.set(slotKey, slot);
+  }
+  return [...slots.values()].sort((a, b) => b.difficulty - a.difficulty || b.lastAt - a.lastAt);
+}
+
 export function buildPlayer(s: Store, id: string): PlayerPayload {
   const p = findPlayer(s, id);
   if (!p) {
@@ -318,7 +433,7 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
       const ms = s.mapSessionById.get(num(sp.session_id));
       return { sp, ms };
     })
-    .filter((x) => x.ms)
+    .filter((x) => x.ms && num(x.ms.debug) === 0 && num(x.ms.started_at) >= SESSIONS_VISIBLE_SINCE)
     .sort((a, b) => num(b.ms!.started_at) - num(a.ms!.started_at))
     .slice(0, 50);
 
@@ -335,6 +450,7 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
       if (maxWave > cap) maxWave = cap;
     }
     return {
+      id: num(ms!.id),
       map: m,
       mapPretty: prettyMap(mapName),
       hasMapImage: existsSync(join(s.mapsDir, `${m}.jpg`)),
@@ -363,6 +479,7 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
         hasMapImage: existsSync(join(s.mapsDir, `${m}.jpg`)),
         count: num(c.clear_count),
         lastAt: num(c.last_cleared_at),
+        difficulties: clearDifficulties(s, steamId, m),
       };
     })
     .sort((a, b) => b.count - a.count || a.map.localeCompare(b.map));
@@ -419,8 +536,171 @@ export function buildPlayer(s: Store, id: string): PlayerPayload {
           adminName: str(ban.admin_name),
         }
       : null,
-    sessions,
+    sessions: SESSIONS_PUBLIC ? sessions : [],
     clears,
+  };
+}
+
+function cleanPlayerName(raw: unknown): string {
+  const name = str(raw)
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/^_+/, "")
+    .trim();
+  return name || "???";
+}
+
+function isPublicPlayer(s: Store, steam: string): boolean {
+  const p = s.playersBySteam.get(steam);
+  return !p || num(p.admin) === 0;
+}
+
+// Still-open maps younger than this stay "in progress". Older ones with no
+// close are treated as unfinished unknowns (a crash that never sent map close).
+const OPEN_SESSION_MAX_SEC = 3 * 3600;
+
+export function recentSessions(s: Store, limit: number): RecentSessionInfo[] {
+  if (!SESSIONS_PUBLIC) return [];
+  const now = Math.floor(Date.now() / 1000);
+  const rows = [...s.mapSessionById.values()]
+    .filter((ms) => KNOWN_SERVERS.has(str(ms.server_name).trim().toLowerCase()))
+    .filter((ms) => num(ms.debug) === 0)
+    .map((ms) => {
+      const people = (s.playersBySession.get(num(ms.id)) ?? []).filter((sp) =>
+        isPublicPlayer(s, str(sp.steam_id).trim()),
+      );
+      return { ms, people };
+    })
+    .filter((row) => num(row.ms.started_at) >= SESSIONS_VISIBLE_SINCE)
+    .filter((row) => num(row.ms.player_count) > 0 || row.people.length > 0)
+    .sort((a, b) => num(b.ms.started_at) - num(a.ms.started_at));
+
+  const cap = Math.max(1, Math.min(2000, limit));
+  const out: RecentSessionInfo[] = [];
+  for (const { ms, people } of rows) {
+    const mapName = str(ms.map_name);
+    const m = mapName.toLowerCase();
+    const finalWave = num(ms.final_wave);
+    let wave = num(ms.wave);
+    if (finalWave > 0 && wave > finalWave + 1) wave = finalWave + 1;
+    const startedAt = num(ms.started_at);
+    const endedAt = num(ms.ended_at);
+    let durationSec = num(ms.duration_sec);
+    let outcome = str(ms.outcome) || "unknown";
+    if (endedAt <= 0 && (outcome === "unknown" || outcome === "")) {
+      const age = startedAt > 0 ? now - startedAt : -1;
+      if (age >= 0 && age <= OPEN_SESSION_MAX_SEC) {
+        outcome = "playing";
+        durationSec = age;
+      }
+    }
+    // A map open that never closed is not a finished session.
+    if (endedAt <= 0 && outcome !== "playing") continue;
+    out.push({
+      id: num(ms.id),
+      map: m,
+      mapPretty: prettyMap(mapName),
+      hasMapImage: existsSync(join(s.mapsDir, `${m}.jpg`)),
+      startedAt,
+      endedAt,
+      durationSec,
+      outcome,
+      wave,
+      finalWave,
+      difficulty: num(ms.difficulty),
+      server: serverLabel(ms.server_name),
+      playerCount: num(ms.player_count) || people.length,
+      players: people.map((sp) => ({
+        steamId: str(sp.steam_id).trim(),
+        name: cleanPlayerName(sp.name),
+        perk: str(sp.perk_name),
+      })),
+    });
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+function sessionPlayerDetail(s: Store, sp: Row, finalWave: number): SessionDetailPlayer {
+  let maxWave = num(sp.max_wave);
+  if (finalWave > 0 && maxWave > finalWave + 1) maxWave = finalWave + 1;
+  const steam = str(sp.steam_id).trim();
+  const account = s.playersBySteam.get(steam);
+  const skinName = str(account?.last_skin_name).trim();
+  const standing = livePerkStanding(steam, num(sp.perk_index, -1), str(sp.perk_name));
+  return {
+    steamId: steam,
+    name: cleanPlayerName(sp.name),
+    perk: str(sp.perk_name),
+    perkIndex: num(sp.perk_index, -1),
+    perkLevel: standing ? standing.level : null,
+    prestigeRank: standing?.prestigeRank ?? 0,
+    joinedAt: num(sp.joined_at),
+    leftAt: num(sp.left_at),
+    durationSec: num(sp.duration_sec),
+    joinWave: num(sp.join_wave),
+    maxWave,
+    outcome: str(sp.outcome) || "unknown",
+    kills: num(sp.kills),
+    points: num(sp.points),
+    scrakes: num(sp.scrakes),
+    fps: num(sp.fps),
+    cash: num(sp.cash),
+    deaths: num(sp.deaths),
+    healed: num(sp.healed),
+    welded: num(sp.welded),
+    bloats: num(sp.bloats),
+    sirens: num(sp.sirens),
+    husks: num(sp.husks),
+    donated: num(sp.donated),
+    skinName,
+    hasSkin: skinName !== "" && existsSync(join(s.publicDir, "assets", "skins", `${skinName}.png`)),
+  };
+}
+
+export function sessionDetail(s: Store, sessionId: number): SessionDetailInfo | null {
+  if (!SESSIONS_PUBLIC) return null;
+  const ms = s.mapSessionById.get(sessionId);
+  if (!ms) return null;
+  const mapName = str(ms.map_name);
+  const m = mapName.toLowerCase();
+  const finalWave = num(ms.final_wave);
+  let wave = num(ms.wave);
+  if (finalWave > 0 && wave > finalWave + 1) wave = finalWave + 1;
+  const startedAt = num(ms.started_at);
+  const endedAt = num(ms.ended_at);
+  let durationSec = num(ms.duration_sec);
+  let outcome = str(ms.outcome) || "unknown";
+  const now = Math.floor(Date.now() / 1000);
+  if (endedAt <= 0 && (outcome === "unknown" || outcome === "")) {
+    const age = startedAt > 0 ? now - startedAt : -1;
+    if (age >= 0 && age <= OPEN_SESSION_MAX_SEC) {
+      outcome = "playing";
+      durationSec = age;
+    }
+  }
+  const people = [...(s.playersBySession.get(sessionId) ?? [])].sort(
+    (a, b) => num(b.points) - num(a.points) || num(b.kills) - num(a.kills) || str(a.name).localeCompare(str(b.name)),
+  );
+  const players = people.map((sp) => sessionPlayerDetail(s, sp, finalWave));
+  return {
+    id: sessionId,
+    found: true,
+    map: m,
+    mapPretty: prettyMap(mapName),
+    hasMapImage: existsSync(join(s.mapsDir, `${m}.jpg`)),
+    startedAt,
+    endedAt,
+    durationSec,
+    outcome,
+    wave,
+    finalWave,
+    difficulty: num(ms.difficulty),
+    server: serverLabel(ms.server_name),
+    day: num(ms.day),
+    debug: num(ms.debug) !== 0,
+    playerCount: num(ms.player_count) || players.length,
+    players,
+    join: sessionJoinUrl(ms.server_name, outcome, endedAt),
   };
 }
 

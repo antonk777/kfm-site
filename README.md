@@ -131,9 +131,8 @@ via `stats-server.py`. Charts mirror Daily Players (peak + unique) and also show
 
 No auth — unlisted URL only (do not link it from the public page).
 
-**Admins:** the live card and a player's own session list (and map clears) include
-DB admins. Daily unique, peak, retention, average playtime and the pies skip
-players whose `players.admin` is non-zero.
+**Admins:** DB admins count in every public stat the same as players (unique,
+peak, retention, playtime, pies, session names, `player_count`).
 
 1. `sudo -E SKIP_FETCH=1 bash deploy.sh` (starts `kfm-stats.service`, reloads Caddy)
 2. Open `https://kf-maniacs.com/statistics/`

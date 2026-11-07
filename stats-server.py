@@ -54,6 +54,13 @@ DOWNLOAD_PATH_RE = re.compile(r"^/(download|KFM-Companion[^/]*\.exe)$", re.I)
 # Slots that still accept stats. Hard and Suicidal stay here so
 # «Все» keeps their history, but they are not shown or restarted from the panel.
 KNOWN_SERVERS = ("meatgrinder", "hard", "suicidal", "bloodbath")
+# Public session lists and pages. Ingest keeps running either way.
+# Set this to False to hide them again, then redeploy the site.
+# Keep web/src/lib/flags.ts SESSIONS_PUBLIC in step with this.
+SESSIONS_PUBLIC = True
+# Session lists and player histories omit maps that started before this.
+# 7 Nov 2026 19:00 Moscow (UTC+3). Keep web/src/lib/flags.ts in step with this.
+SESSIONS_VISIBLE_SINCE = 1_794_067_200
 PANEL_SERVERS = ("meatgrinder", "bloodbath")
 SERVER_LABELS = {
     "meatgrinder": "Meat Grinder",
@@ -581,8 +588,6 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     server = canon_server_name(p.get("server") or p.get("server_name"))
     if not server:
         return
-    # The live card lists everyone. Session rows are stored for the player page
-    # too; daily unique, peak, retention and the pies still skip DB admins.
     players = _parse_live_players(str(p.get("players") or ""))
     online = len(players)
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
@@ -591,6 +596,30 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     difficulty = float(num(p.get("diff"), 0.0))
     if difficulty <= 0 and map_name:
         difficulty = _session_difficulty(con, server, map_name, ts)
+    # Sticky-mark the open map play when debug is on (or toggled mid-match).
+    if _payload_debug(p):
+        key = str(p.get("key") or p.get("session_key") or "").strip()
+        if key:
+            try:
+                with LOCK:
+                    ensure_map_session(con, p)
+            except ValueError:
+                pass
+        else:
+            with LOCK:
+                cur = con.cursor()
+                cur.execute(
+                    """
+                    UPDATE `site_map_sessions` ms
+                    JOIN (
+                      SELECT `id` FROM `site_map_sessions`
+                      WHERE `server_name`=%s AND `ended_at`=0 AND `map_name`=%s
+                      ORDER BY `started_at` DESC LIMIT 1
+                    ) t ON t.`id`=ms.`id`
+                    SET ms.`debug`=1
+                    """,
+                    (server, map_name),
+                )
     snap = {
         "server": server,
         "map": map_name,
@@ -831,8 +860,166 @@ def difficulty_name(d: Any) -> str:
     return "Beginner"
 
 
+# 29.10.2026 15:13 Moscow. Matches web/src/lib/format.ts BRUTAL_RENAMED_AT.
+BRUTAL_RENAMED_AT = 1793275980
+
+
+def difficulty_bucket(d: Any) -> float:
+    """Tier used to group a player's clears of one map. 0 when unknown."""
+    try:
+        n = float(d)
+    except (TypeError, ValueError):
+        return 0.0
+    if n >= 8:
+        return 8.0
+    if n >= 7:
+        return 7.0
+    if n >= 5:
+        return 5.0
+    if n >= 4:
+        return 4.0
+    if n >= 2:
+        return 2.0
+    if n > 0:
+        return 1.0
+    return 0.0
+
+
+def _public_live_player(p: dict[str, Any]) -> dict[str, Any]:
+    """One landing-monitor row.
+
+    steamId is included so the row can link to the player page and load a
+    Steam avatar. perkIdx is the veterancy index (0-6); the site maps that
+    to an icon, and perk is only the name the server sent.
+    """
+    steam = str(p.get("steam") or "").strip()
+    if not steam.isdigit() or not 16 <= len(steam) <= 20:
+        steam = ""
+    try:
+        perk_idx = int(p.get("perkIdx"))
+    except (TypeError, ValueError):
+        perk_idx = -1
+    row: dict[str, Any] = {
+        "name": str(p.get("name") or "")[:64],
+        "perk": str(p.get("perk") or "")[:32],
+        "perkIdx": perk_idx,
+    }
+    if steam:
+        row["steamId"] = steam
+    return row
+
+
+def _perk_index_from_name(name: Any) -> int:
+    key = re.sub(r"[\s_]+", "", str(name or "").lower())
+    return {
+        "fieldmedic": 0,
+        "supportspecialist": 1,
+        "sharpshooter": 2,
+        "commando": 3,
+        "berserker": 4,
+        "firebug": 5,
+        "demolition": 6,
+        "demolitions": 6,
+    }.get(key, -1)
+
+
+def _attach_public_perk_levels(con, servers: list[dict[str, Any]]) -> None:
+    """Fill perkLevel from the perkhost counters, the same figure as the profile."""
+    players: list[dict[str, Any]] = []
+    for srv in servers:
+        players.extend(srv.get("players") or [])
+    steams: list[str] = []
+    seen: set[str] = set()
+    for p in players:
+        sid = str(p.get("steamId") or "")
+        if sid and sid not in seen:
+            seen.add(sid)
+            steams.append(sid)
+    if not steams:
+        return
+    placeholders = ",".join(["%s"] * len(steams))
+    rows = _query(
+        con,
+        f"SELECT * FROM `players` WHERE `steam_id` IN ({placeholders})",
+        tuple(steams),
+    )
+    by_steam = {str(r.get("steam_id") or ""): r for r in rows}
+    ids = [int(r["id"]) for r in rows if r.get("id") is not None]
+    prestige_by_account: dict[int, dict[int, dict[str, Any]]] = {}
+    if ids:
+        id_placeholders = ",".join(["%s"] * len(ids))
+        for r in _query(
+            con,
+            "SELECT `account_id`, `perk`, `rank`, `baseline_a`, `baseline_b`, `prestiged_at` "
+            f"FROM `prestige` WHERE `account_id` IN ({id_placeholders})",
+            tuple(ids),
+        ):
+            acc = int(r.get("account_id") or 0)
+            prestige_by_account.setdefault(acc, {})[int(r.get("perk") or 0)] = r
+    computed: dict[int, list[dict[str, Any]]] = {}
+    for p in players:
+        row = by_steam.get(str(p.get("steamId") or ""))
+        if not row:
+            continue
+        raw_idx = p.get("perkIdx")
+        if raw_idx is None:
+            raw_idx = p.get("perkIndex")
+        try:
+            perk_idx = int(raw_idx)
+        except (TypeError, ValueError):
+            perk_idx = -1
+        if perk_idx < 0 or perk_idx > 6:
+            perk_idx = _perk_index_from_name(p.get("perk"))
+        if perk_idx < 0:
+            continue
+        acc = int(row.get("id") or 0)
+        if acc not in computed:
+            computed[acc] = _player_perks(row, prestige_by_account.get(acc, {}))
+        # Index 0 is Field Medic. `or -1` would treat that 0 as missing.
+        match = next((x for x in computed[acc] if int(x["index"]) == perk_idx), None)
+        if not match:
+            continue
+        p["perkLevel"] = int(match["level"])
+        rank = int(match.get("prestigeRank") or 0)
+        if rank > 0:
+            p["prestigeRank"] = rank
+
+
+def _attach_open_sessions(con, servers: list[dict[str, Any]]) -> None:
+    """sessionId of the map still open on each slot. 0 when the map has ended."""
+    if not SESSIONS_PUBLIC or not servers:
+        return
+    names: list[str] = []
+    for srv in servers:
+        names.extend(server_name_variants(str(srv.get("id") or "")))
+    names = [n for n in dict.fromkeys(names) if n]
+    if not names:
+        return
+    placeholders = ",".join(["%s"] * len(names))
+    rows = _query(
+        con,
+        f"""
+        SELECT `id`, `server_name`
+        FROM `site_map_sessions`
+        WHERE `server_name` IN ({placeholders})
+          AND `ended_at`=0
+          AND `started_at` >= %s
+          {nonempty_session_sql()}{public_session_sql()}
+        ORDER BY `started_at` DESC
+        """,
+        (*names, now_ts() - _OPEN_SESSION_MAX_SEC),
+    )
+    by_slot: dict[str, int] = {}
+    for row in rows:
+        slot = canon_server_name(row.get("server_name"))
+        if slot and slot not in by_slot:
+            by_slot[slot] = int(row["id"])
+    for srv in servers:
+        srv["sessionId"] = by_slot.get(str(srv.get("id") or ""), 0)
+
+
 def build_public_servers() -> dict[str, Any]:
-    """Landing-page monitor: the panel servers without steam ids or tick data.
+    """Landing-page monitor: the panel servers, without tick timings.
 
     Stale means no live push within LIVE_STALE_SEC; the map and players then
     come from the last snapshot (or the open DB session) and may be old.
@@ -841,10 +1028,7 @@ def build_public_servers() -> dict[str, Any]:
     for slot in PANEL_SERVERS:
         live = get_live_status(slot)
         port = SLOT_PORTS.get(slot, (0, 0))[0]
-        players = [
-            {"name": str(p.get("name") or "")[:64], "perk": str(p.get("perk") or "")[:32]}
-            for p in (live.get("players") or [])
-        ]
+        players = [_public_live_player(p) for p in (live.get("players") or [])]
         out.append(
             {
                 "id": slot,
@@ -862,8 +1046,19 @@ def build_public_servers() -> dict[str, Any]:
                 "players": players,
                 "stale": bool(live.get("stale")),
                 "updated": int(live.get("ts") or 0),
+                "sessionId": 0,
             }
         )
+    con = getattr(Handler, "con", None)
+    if con is not None:
+        try:
+            _attach_open_sessions(con, out)
+        except Exception as exc:  # noqa: BLE001
+            print(f"kfm-stats: open sessions: {exc}", flush=True)
+        try:
+            _attach_public_perk_levels(con, out)
+        except Exception as exc:  # noqa: BLE001
+            print(f"kfm-stats: perk levels: {exc}", flush=True)
     return {"ts": now_ts(), "servers": out}
 
 
@@ -1220,6 +1415,47 @@ def init_schema(con) -> None:
             """
         )
         print("kfm-stats: migrated site_session_players +join_wave", flush=True)
+    # Tab scoreboard + match counters snapshot on leave (summed across rejoins).
+    cur.execute("SHOW COLUMNS FROM `site_session_players` LIKE 'kills'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            ALTER TABLE `site_session_players`
+              ADD COLUMN `kills` INT NOT NULL DEFAULT 0 AFTER `outcome`,
+              ADD COLUMN `points` INT NOT NULL DEFAULT 0 AFTER `kills`,
+              ADD COLUMN `scrakes` INT NOT NULL DEFAULT 0 AFTER `points`,
+              ADD COLUMN `fps` INT NOT NULL DEFAULT 0 AFTER `scrakes`,
+              ADD COLUMN `cash` INT NOT NULL DEFAULT 0 AFTER `fps`,
+              ADD COLUMN `deaths` INT NOT NULL DEFAULT 0 AFTER `cash`,
+              ADD COLUMN `healed` INT NOT NULL DEFAULT 0 AFTER `deaths`,
+              ADD COLUMN `welded` INT NOT NULL DEFAULT 0 AFTER `healed`,
+              ADD COLUMN `bloats` INT NOT NULL DEFAULT 0 AFTER `welded`,
+              ADD COLUMN `sirens` INT NOT NULL DEFAULT 0 AFTER `bloats`,
+              ADD COLUMN `husks` INT NOT NULL DEFAULT 0 AFTER `sirens`
+            """
+        )
+        print("kfm-stats: migrated site_session_players +scoreboard", flush=True)
+    # Dosh tossed to the squad (Philanthropist on the session page).
+    cur.execute("SHOW COLUMNS FROM `site_session_players` LIKE 'donated'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            ALTER TABLE `site_session_players`
+              ADD COLUMN `donated` INT NOT NULL DEFAULT 0 AFTER `husks`
+            """
+        )
+        print("kfm-stats: migrated site_session_players +donated", flush=True)
+    # Admin / LocalDebug map plays — sticky flag, hidden from public session lists.
+    cur.execute("SHOW COLUMNS FROM `site_map_sessions` LIKE 'debug'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            ALTER TABLE `site_map_sessions`
+              ADD COLUMN `debug` TINYINT NOT NULL DEFAULT 0 AFTER `player_count`,
+              ADD KEY `idx_site_map_debug` (`debug`)
+            """
+        )
+        print("kfm-stats: migrated site_map_sessions +debug", flush=True)
     # Migrate pre-per-server snapshot table (PK was day only).
     cur.execute("SHOW COLUMNS FROM `site_daily_snapshot` LIKE 'server_name'")
     if not cur.fetchone():
@@ -1234,8 +1470,7 @@ def init_schema(con) -> None:
             "ALTER TABLE `site_daily_snapshot` ADD PRIMARY KEY (`day`, `server_name`)"
         )
         print("kfm-stats: migrated site_daily_snapshot +server_name", flush=True)
-    # Lobby shells with no player row at all. Admin-only rows stay so the
-    # day is "session tracked" and a nameless snapshot cannot fill «Все».
+    # Lobby shells with no player row at all.
     cur.execute(
         """
         DELETE ms FROM `site_map_sessions` ms
@@ -1297,15 +1532,6 @@ def server_from_payload(p: dict[str, Any]) -> str:
     return canon_server_name(key.split(":", 1)[0])
 
 
-def non_admin_sql(alias: str = "sp") -> str:
-    """DB admins are not players for any public stat."""
-    return (
-        f" AND {alias}.`steam_id` NOT IN ("
-        "SELECT `steam_id` FROM `players` WHERE `admin`<>0 AND `steam_id`<>''"
-        ")"
-    )
-
-
 def repair_blank_server_names(con) -> None:
     """Blank or beta rows whose session key starts with a live slot belong on that slot.
 
@@ -1339,13 +1565,13 @@ def repair_blank_server_names(con) -> None:
 
 
 def refresh_all_player_counts(con) -> None:
-    """player_count is non-admin humans only. Admin rows stay so the day is tracked."""
+    """Recount player_count from every attached steam id, including DB admins."""
     con.cursor().execute(
-        f"""
+        """
         UPDATE `site_map_sessions` ms
         SET `player_count`=(
           SELECT COUNT(*) FROM `site_session_players` sp
-          WHERE sp.`session_id`=ms.`id`{non_admin_sql("sp")}
+          WHERE sp.`session_id`=ms.`id`
         )
         """
     )
@@ -1354,7 +1580,7 @@ def refresh_all_player_counts(con) -> None:
 def _player_count_sql() -> str:
     return (
         "(SELECT COUNT(*) FROM `site_session_players` sp "
-        f"WHERE sp.`session_id`=%s{non_admin_sql('sp')})"
+        "WHERE sp.`session_id`=%s)"
     )
 
 
@@ -1366,9 +1592,9 @@ def resolve_unique(
 ) -> int:
     """Unique players for one day.
 
-    When player rows exist, `distinct` is the number (admins already removed).
-    A day with map sessions and no non-admin players is zero. Snapshot numbers
-    are only for days before session rows existed, and only for that same server.
+    When player rows exist, `distinct` is the number. A day with map sessions
+    and no players is zero. Snapshot numbers are only for days before session
+    rows existed, and only for that same server.
     """
     if player_rows > 0:
         return distinct
@@ -1444,18 +1670,20 @@ def ensure_map_session(con, p: dict[str, Any]) -> int:
     day = int(num(p.get("day"), day_from_ts(started)))
     difficulty = float(num(p.get("diff"), num(p.get("difficulty"), 0.0)))
     server_name = server_from_payload(p)
+    debug = 1 if _payload_debug(p) else 0
     cur = con.cursor()
     cur.execute(
         """
         INSERT INTO `site_map_sessions`(
-          `session_key`, `map_name`, `started_at`, `day`, `difficulty`, `server_name`
-        ) VALUES(%s,%s,%s,%s,%s,%s)
+          `session_key`, `map_name`, `started_at`, `day`, `difficulty`, `server_name`, `debug`
+        ) VALUES(%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
           `map_name`=IF(VALUES(`map_name`)='', `map_name`, VALUES(`map_name`)),
           `difficulty`=IF(VALUES(`difficulty`)=0, `difficulty`, VALUES(`difficulty`)),
-          `server_name`=IF(VALUES(`server_name`)='', `server_name`, VALUES(`server_name`))
+          `server_name`=IF(VALUES(`server_name`)='', `server_name`, VALUES(`server_name`)),
+          `debug`=IF(VALUES(`debug`)=1, 1, `debug`)
         """,
-        (key, map_name, started, day, difficulty, server_name),
+        (key, map_name, started, day, difficulty, server_name, debug),
     )
     cur.execute("SELECT `id` FROM `site_map_sessions` WHERE `session_key`=%s", (key,))
     row = cur.fetchone()
@@ -1503,7 +1731,7 @@ def ingest_map_close(con, p: dict[str, Any]) -> None:
             "SELECT `player_count` AS c FROM `site_map_sessions` WHERE `id`=%s", (sid,)
         )
         row = cur.fetchone()
-        # Drop a shell with no player row. Admin rows stay (they are not counted).
+        # Drop a shell with no player row.
         if row is not None and int(row["c"] or 0) <= 0:
             cur.execute(
                 "SELECT COUNT(*) AS n FROM `site_session_players` WHERE `session_id`=%s",
@@ -1610,6 +1838,19 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
     perk_name = str(p.get("perk") or p.get("perk_name") or "")[:32]
     outcome = str(p.get("outcome") or "leave").lower()[:16]
     wave = int(num(p.get("wave"), 0))
+    # Scoreboard / match counters for this disconnect segment (summed on rejoin).
+    kills = max(0, int(num(p.get("kills"), 0)))
+    points = max(0, int(num(p.get("points"), 0)))
+    scrakes = max(0, int(num(p.get("scrakes"), 0)))
+    fps = max(0, int(num(p.get("fps"), 0)))
+    cash = max(0, int(num(p.get("cash"), 0)))
+    deaths = max(0, int(num(p.get("deaths"), 0)))
+    healed = max(0, int(num(p.get("healed"), 0)))
+    welded = max(0, int(num(p.get("welded"), 0)))
+    bloats = max(0, int(num(p.get("bloats"), 0)))
+    sirens = max(0, int(num(p.get("sirens"), 0)))
+    husks = max(0, int(num(p.get("husks"), 0)))
+    donated = max(0, int(num(p.get("donated"), 0)))
     with LOCK:
         sid = ensure_map_session(con, p)
         touch_player(con, steam, name)
@@ -1617,8 +1858,10 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
             """
             INSERT INTO `site_session_players`(
               `session_id`, `session_key`, `steam_id`, `name`, `joined_at`, `left_at`,
-              `duration_sec`, `perk_index`, `perk_name`, `max_wave`, `outcome`
-            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              `duration_sec`, `perk_index`, `perk_name`, `max_wave`, `outcome`,
+              `kills`, `points`, `scrakes`, `fps`, `cash`, `deaths`,
+              `healed`, `welded`, `bloats`, `sirens`, `husks`, `donated`
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
               `name`=IF(VALUES(`name`)='', `name`, VALUES(`name`)),
               `joined_at`=IF(`joined_at`=0, VALUES(`joined_at`), LEAST(`joined_at`, VALUES(`joined_at`))),
@@ -1627,7 +1870,19 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
               `perk_index`=IF(VALUES(`perk_name`)='', `perk_index`, VALUES(`perk_index`)),
               `perk_name`=IF(VALUES(`perk_name`)='', `perk_name`, VALUES(`perk_name`)),
               `max_wave`=GREATEST(`max_wave`, VALUES(`max_wave`)),
-              `outcome`=VALUES(`outcome`)
+              `outcome`=VALUES(`outcome`),
+              `kills`=`kills`+VALUES(`kills`),
+              `points`=`points`+VALUES(`points`),
+              `scrakes`=`scrakes`+VALUES(`scrakes`),
+              `fps`=`fps`+VALUES(`fps`),
+              `cash`=VALUES(`cash`),
+              `deaths`=`deaths`+VALUES(`deaths`),
+              `healed`=`healed`+VALUES(`healed`),
+              `welded`=`welded`+VALUES(`welded`),
+              `bloats`=`bloats`+VALUES(`bloats`),
+              `sirens`=`sirens`+VALUES(`sirens`),
+              `husks`=`husks`+VALUES(`husks`),
+              `donated`=`donated`+VALUES(`donated`)
             """,
             (
                 sid,
@@ -1641,6 +1896,18 @@ def ingest_player_leave(con, p: dict[str, Any]) -> None:
                 perk_name,
                 wave,
                 outcome,
+                kills,
+                points,
+                scrakes,
+                fps,
+                cash,
+                deaths,
+                healed,
+                welded,
+                bloats,
+                sirens,
+                husks,
+                donated,
             ),
         )
         con.cursor().execute(
@@ -1809,6 +2076,21 @@ def nonempty_session_sql(col: str = "`player_count`") -> str:
     return f" AND {col}>0"
 
 
+def public_session_sql(debug_col: str = "`debug`") -> str:
+    """Hide admin/LocalDebug map plays from public lists and aggregates."""
+    return f" AND COALESCE({debug_col},0)=0"
+
+
+def _payload_debug(p: dict[str, Any]) -> bool:
+    raw = p.get("debug")
+    if raw is None or raw == "":
+        return False
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
 def list_servers(con) -> list[dict[str, Any]]:
     """Servers shown in the admin panel. Rows under a retired id count for its slot."""
     cur = con.cursor()
@@ -1912,12 +2194,7 @@ def _snap_numbers(con, day: int, server: str) -> tuple[int, int]:
 
 
 def session_activity(con, day: int, server: str | None) -> tuple[int, int, int, int]:
-    """Return (player_rows, non_admin_distinct, map_sessions, non_admin_peak).
-
-    player_rows counts every attached steam id, including admins, so a day that
-    only an admin visited is still "tracked" and does not fall back to the
-    nameless daily snapshot.
-    """
+    """Return (player_rows, distinct, map_sessions, peak)."""
     cur = con.cursor()
     srv_sql, srv_args = server_sql(server, "ms.`server_name`")
     t0 = day_start_ts(day)
@@ -1925,11 +2202,7 @@ def session_activity(con, day: int, server: str | None) -> tuple[int, int, int, 
     cur.execute(
         f"""
         SELECT COUNT(*) AS rows_n,
-               COUNT(DISTINCT CASE
-                 WHEN sp.`steam_id` NOT IN (
-                   SELECT `steam_id` FROM `players`
-                   WHERE `admin`<>0 AND `steam_id`<>''
-                 ) THEN sp.`steam_id` END) AS uniq
+               COUNT(DISTINCT sp.`steam_id`) AS uniq
         FROM `site_session_players` sp
         INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
         WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
@@ -1951,9 +2224,6 @@ def session_activity(con, day: int, server: str | None) -> tuple[int, int, int, 
           WHERE (ms.`day`=%s OR (sp.`joined_at`>=%s AND sp.`joined_at`<%s)
                  OR (ms.`started_at`>=%s AND ms.`started_at`<%s))
             {srv_sql}
-            AND sp.`steam_id` NOT IN (
-              SELECT `steam_id` FROM `players` WHERE `admin`<>0 AND `steam_id`<>''
-            )
           GROUP BY sp.`session_id`
         ) pc
         """,
@@ -2015,7 +2285,7 @@ def players_on_day(con, day: int, server: str | None = None) -> set[str]:
         SELECT DISTINCT sp.`steam_id`
         FROM `site_session_players` sp
         INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-        WHERE ms.`day`=%s{srv_sql}{non_admin_sql("sp")}
+        WHERE ms.`day`=%s{srv_sql}
         """,
         (day, *srv_args),
     )
@@ -2054,7 +2324,7 @@ def avg_playtime_by_day(con, days: list[int], server: str | None = None) -> list
             SELECT sp.`steam_id`, SUM(sp.`duration_sec`) AS total
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE ms.`day`=%s{srv_sql}{non_admin_sql("sp")}
+            WHERE ms.`day`=%s{srv_sql}
             GROUP BY sp.`steam_id`
             """,
             (d, *srv_args),
@@ -2082,7 +2352,7 @@ def player_countries(con, ms_srv_sql: str, ms_srv_args: tuple[Any, ...]) -> list
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
             INNER JOIN `players` p ON p.`steam_id`=sp.`steam_id`
-            WHERE p.`country` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
+            WHERE p.`country` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{public_session_sql("ms.`debug`")}
             GROUP BY p.`country`
             ORDER BY c DESC
             """,
@@ -2116,7 +2386,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur = con.cursor()
         ms_srv_sql, ms_srv_args = server_sql(server, "ms.`server_name`")
         cur.execute(
-            f"SELECT COUNT(*) AS c FROM `site_map_sessions` WHERE 1=1{srv_sql}{nonempty_session_sql()}",
+            f"SELECT COUNT(*) AS c FROM `site_map_sessions` WHERE 1=1{srv_sql}{nonempty_session_sql()}{public_session_sql()}",
             srv_args,
         )
         sessions = int(cur.fetchone()["c"] or 0)
@@ -2125,7 +2395,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT COUNT(DISTINCT sp.`steam_id`) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE 1=1{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
+            WHERE 1=1{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{public_session_sql("ms.`debug`")}
             """,
             ms_srv_args,
         )
@@ -2135,7 +2405,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             SELECT sp.`perk_name` AS name, COUNT(*) AS c
             FROM `site_session_players` sp
             INNER JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
-            WHERE sp.`perk_name` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{non_admin_sql("sp")}
+            WHERE sp.`perk_name` != ''{ms_srv_sql}{nonempty_session_sql("ms.`player_count`")}{public_session_sql("ms.`debug`")}
             GROUP BY sp.`perk_name`
             ORDER BY c DESC LIMIT 12
             """,
@@ -2145,7 +2415,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `map_name` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE `map_name` != ''{srv_sql}{nonempty_session_sql()}
+            WHERE `map_name` != ''{srv_sql}{nonempty_session_sql()}{public_session_sql()}
             GROUP BY `map_name`
             ORDER BY c DESC LIMIT 12
             """,
@@ -2155,7 +2425,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `outcome` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE 1=1{srv_sql}{nonempty_session_sql()}
+            WHERE 1=1{srv_sql}{nonempty_session_sql()}{public_session_sql()}
             GROUP BY `outcome`
             """,
             srv_args,
@@ -2164,7 +2434,7 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         cur.execute(
             f"""
             SELECT `wave` AS name, COUNT(*) AS c FROM `site_map_sessions`
-            WHERE `outcome`='loss' AND `wave`>0{srv_sql}{nonempty_session_sql()}
+            WHERE `outcome`='loss' AND `wave`>0{srv_sql}{nonempty_session_sql()}{public_session_sql()}
             GROUP BY `wave` ORDER BY `wave` LIMIT 20
             """,
             srv_args,
@@ -3398,21 +3668,23 @@ def _ranked_players(con) -> int:
 
 
 def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    if not steam_id:
+    if not SESSIONS_PUBLIC or not steam_id:
         return []
     rows = _query(
         con,
-        """
+        f"""
         SELECT sp.`joined_at`, sp.`max_wave`, sp.`join_wave`, sp.`perk_name`,
                sp.`outcome` AS `sp_outcome`,
+               ms.`id` AS `session_id`,
                ms.`map_name`, ms.`started_at`, ms.`ended_at`, ms.`duration_sec`,
                ms.`outcome`, ms.`wave`, ms.`final_wave`, ms.`difficulty`, ms.`server_name`
         FROM `site_session_players` sp
         JOIN `site_map_sessions` ms ON ms.`id` = sp.`session_id`
-        WHERE sp.`steam_id`=%s
+        WHERE sp.`steam_id`=%s{public_session_sql("ms.`debug`")}
+          AND ms.`started_at` >= %s
         ORDER BY ms.`started_at` DESC LIMIT %s
         """,
-        (steam_id, limit),
+        (steam_id, SESSIONS_VISIBLE_SINCE, limit),
     )
     maps_dir = _maps_dir()
     out: list[dict[str, Any]] = []
@@ -3421,6 +3693,7 @@ def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]
         key = map_name.lower()
         out.append(
             {
+                "id": int(r.get("session_id") or 0),
                 "map": key,
                 "mapPretty": map_name[3:] if map_name.upper().startswith("KF-") else map_name,
                 "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
@@ -3452,6 +3725,236 @@ def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]
     return out
 
 
+# A map that never closed (crash, killed process) should not stay "in progress".
+_OPEN_SESSION_MAX_SEC = 3 * 3600
+
+
+def _session_player_name(raw: Any) -> str:
+    name = re.sub(r"[\x00-\x1f\x7f]", "", str(raw or "")).lstrip("_").strip()
+    return name or "???"
+
+
+def recent_sessions(con, limit: int = 30) -> list[dict[str, Any]]:
+    """Recent map plays across every live server, newest first.
+
+    Public landing-page list. One row is the map, not one player's visit.
+    """
+    if not SESSIONS_PUBLIC:
+        return []
+    # The homepage asks for 5. The Sessions page asks for the whole list.
+    limit = max(1, min(2000, int(limit or 30)))
+    srv_sql, srv_args = server_sql(None)
+    # Closed maps, plus anything that opened recently enough to still be in progress.
+    # Older rows with ended_at=0 never received a map close.
+    open_since = now_ts() - _OPEN_SESSION_MAX_SEC
+    rows = _query(
+        con,
+        f"""
+        SELECT `id`, `map_name`, `started_at`, `ended_at`, `duration_sec`,
+               `outcome`, `wave`, `final_wave`, `difficulty`, `server_name`,
+               `player_count`
+        FROM `site_map_sessions`
+        WHERE 1=1{srv_sql}{nonempty_session_sql()}{public_session_sql()}
+          AND `started_at` >= %s
+          AND (`ended_at` > 0 OR `started_at` >= %s)
+        ORDER BY `started_at` DESC
+        LIMIT %s
+        """,
+        (*srv_args, SESSIONS_VISIBLE_SINCE, open_since, limit),
+    )
+    ids = [int(r.get("id") or 0) for r in rows]
+    by_session: dict[int, list[dict[str, Any]]] = {}
+    if ids:
+        placeholders = ",".join(["%s"] * len(ids))
+        people = _query(
+            con,
+            f"""
+            SELECT sp.`session_id`, sp.`steam_id`, sp.`name`, sp.`perk_name`
+            FROM `site_session_players` sp
+            WHERE sp.`session_id` IN ({placeholders})
+            ORDER BY sp.`name`
+            """,
+            tuple(ids),
+        )
+        for person in people:
+            sid = int(person.get("session_id") or 0)
+            by_session.setdefault(sid, []).append(
+                {
+                    "steamId": str(person.get("steam_id") or ""),
+                    "name": _session_player_name(person.get("name")),
+                    "perk": str(person.get("perk_name") or ""),
+                }
+            )
+    maps_dir = _maps_dir()
+    now = now_ts()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        map_name = str(r.get("map_name") or "")
+        key = map_name.lower()
+        started = int(r.get("started_at") or 0)
+        ended = int(r.get("ended_at") or 0)
+        duration = int(r.get("duration_sec") or 0)
+        outcome = str(r.get("outcome") or "") or "unknown"
+        final_wave = int(r.get("final_wave") or 0)
+        wave = int(r.get("wave") or 0)
+        if final_wave > 0 and wave > final_wave + 1:
+            wave = final_wave + 1
+        if ended <= 0 and outcome in ("", "unknown"):
+            age = now - started if started else -1
+            if 0 <= age <= _OPEN_SESSION_MAX_SEC:
+                outcome = "playing"
+                duration = age
+        players = by_session.get(int(r.get("id") or 0), [])
+        out.append(
+            {
+                "id": int(r.get("id") or 0),
+                "map": key,
+                "mapPretty": map_name[3:] if map_name.upper().startswith("KF-") else map_name,
+                "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
+                "startedAt": started,
+                "endedAt": ended,
+                "durationSec": duration,
+                "outcome": outcome,
+                "wave": wave,
+                "finalWave": final_wave,
+                "difficulty": float(r.get("difficulty") or 0),
+                "server": _server_label(r.get("server_name")),
+                "playerCount": int(r.get("player_count") or 0) or len(players),
+                "players": players,
+            }
+        )
+    return out
+
+
+def _session_player_detail(r: dict[str, Any], skins_dir: Path | None = None) -> dict[str, Any]:
+    final_wave = int(r.get("final_wave") or 0)
+    max_wave = int(r.get("max_wave") or 0)
+    if final_wave > 0 and max_wave > final_wave + 1:
+        max_wave = final_wave + 1
+    skin_name = str(r.get("last_skin_name") or r.get("skin_name") or "").strip()
+    if skins_dir is None:
+        skins_dir = _skins_dir()
+    return {
+        "steamId": str(r.get("steam_id") or ""),
+        "name": _session_player_name(r.get("name")),
+        "perk": str(r.get("perk_name") or ""),
+        "perkIndex": int(r.get("perk_index") if r.get("perk_index") is not None else -1),
+        "perkLevel": None,
+        "prestigeRank": 0,
+        "joinedAt": int(r.get("joined_at") or 0),
+        "leftAt": int(r.get("left_at") or 0),
+        "durationSec": int(r.get("duration_sec") or 0),
+        "joinWave": int(r.get("join_wave") or 0),
+        "maxWave": max_wave,
+        "outcome": str(r.get("outcome") or "") or "unknown",
+        "kills": int(r.get("kills") or 0),
+        "points": int(r.get("points") or 0),
+        "scrakes": int(r.get("scrakes") or 0),
+        "fps": int(r.get("fps") or 0),
+        "cash": int(r.get("cash") or 0),
+        "deaths": int(r.get("deaths") or 0),
+        "healed": int(r.get("healed") or 0),
+        "welded": int(r.get("welded") or 0),
+        "bloats": int(r.get("bloats") or 0),
+        "sirens": int(r.get("sirens") or 0),
+        "husks": int(r.get("husks") or 0),
+        "donated": int(r.get("donated") or 0),
+        "skinName": skin_name,
+        "hasSkin": bool(skin_name) and (skins_dir / (skin_name + ".png")).is_file(),
+    }
+
+
+def _session_join_url(raw_server: Any, outcome: str, ended: int) -> str:
+    """steam:// start link for a map that is still open. Empty otherwise."""
+    if outcome != "playing" or ended > 0:
+        return ""
+    port = SLOT_PORTS.get(canon_server_name(raw_server), (0, 0))[0]
+    if port <= 0:
+        return ""
+    return f"steam://run/{KF_APP_ID}//{PUBLIC_HOST}:{port}"
+
+
+def session_detail(con, session_id: int) -> dict[str, Any] | None:
+    """One map play with every stored player/session field."""
+    if not SESSIONS_PUBLIC:
+        return None
+    session_id = int(session_id or 0)
+    if session_id <= 0:
+        return None
+    rows = _query(
+        con,
+        """
+        SELECT `id`, `map_name`, `started_at`, `ended_at`, `duration_sec`,
+               `outcome`, `wave`, `final_wave`, `difficulty`, `server_name`,
+               `player_count`, `day`, `debug`
+        FROM `site_map_sessions`
+        WHERE `id`=%s
+        """,
+        (session_id,),
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    people = _query(
+        con,
+        """
+        SELECT sp.`steam_id`, sp.`name`, sp.`perk_name`, sp.`perk_index`, sp.`joined_at`, sp.`left_at`,
+               sp.`duration_sec`, sp.`join_wave`, sp.`max_wave`, sp.`outcome`,
+               sp.`kills`, sp.`points`, sp.`scrakes`, sp.`fps`, sp.`cash`, sp.`deaths`,
+               sp.`healed`, sp.`welded`, sp.`bloats`, sp.`sirens`, sp.`husks`, sp.`donated`,
+               p.`last_skin_name`
+        FROM `site_session_players` sp
+        LEFT JOIN `players` p ON p.`steam_id`=sp.`steam_id`
+        WHERE sp.`session_id`=%s
+        ORDER BY sp.`points` DESC, sp.`kills` DESC, sp.`name`
+        """,
+        (session_id,),
+    )
+    skins_dir = _skins_dir()
+    players = [_session_player_detail(p, skins_dir) for p in people]
+    try:
+        _attach_public_perk_levels(con, [{"players": players}])
+    except Exception as exc:  # noqa: BLE001
+        print(f"kfm-stats: session perk levels: {exc}", flush=True)
+    map_name = str(r.get("map_name") or "")
+    key = map_name.lower()
+    started = int(r.get("started_at") or 0)
+    ended = int(r.get("ended_at") or 0)
+    duration = int(r.get("duration_sec") or 0)
+    outcome = str(r.get("outcome") or "") or "unknown"
+    final_wave = int(r.get("final_wave") or 0)
+    wave = int(r.get("wave") or 0)
+    if final_wave > 0 and wave > final_wave + 1:
+        wave = final_wave + 1
+    now = now_ts()
+    if ended <= 0 and outcome in ("", "unknown"):
+        age = now - started if started else -1
+        if 0 <= age <= _OPEN_SESSION_MAX_SEC:
+            outcome = "playing"
+            duration = age
+    maps_dir = _maps_dir()
+    return {
+        "id": session_id,
+        "found": True,
+        "map": key,
+        "mapPretty": map_name[3:] if map_name.upper().startswith("KF-") else map_name,
+        "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
+        "startedAt": started,
+        "endedAt": ended,
+        "durationSec": duration,
+        "outcome": outcome,
+        "wave": wave,
+        "finalWave": final_wave,
+        "difficulty": float(r.get("difficulty") or 0),
+        "server": _server_label(r.get("server_name")),
+        "day": int(r.get("day") or 0),
+        "debug": bool(int(r.get("debug") or 0)),
+        "playerCount": int(r.get("player_count") or 0) or len(players),
+        "players": players,
+        "join": _session_join_url(r.get("server_name"), outcome, ended),
+    }
+
+
 def _player_clears(con, steam_id: str) -> list[dict[str, Any]]:
     if not steam_id:
         return []
@@ -3464,11 +3967,50 @@ def _player_clears(con, steam_id: str) -> list[dict[str, Any]]:
         """,
         (steam_id,),
     )
+    # One row per finish. Difficulty lives on the event; older rows with 0
+    # take it from the map session (a difficulty change restarts the map).
+    events = _query(
+        con,
+        """
+        SELECT e.`map_name` AS `map_name`,
+               IF(e.`difficulty`>0, e.`difficulty`, IFNULL(ms.`difficulty`, 0)) AS `difficulty`,
+               e.`cleared_at` AS `cleared_at`
+        FROM `site_player_map_clear_events` e
+        LEFT JOIN `site_map_sessions` ms
+          ON e.`difficulty`<=0 AND e.`session_key`<>'' AND ms.`session_key`=e.`session_key`
+        WHERE e.`steam_id`=%s
+        """,
+        (steam_id,),
+    )
+    # (tier, era). Era splits Underworld from Brutal so the name matches
+    # the date of the clear; they are the same 8.0 tier.
+    by_map: dict[str, dict[tuple[float, int], dict[str, int]]] = {}
+    for ev in events:
+        map_key = str(ev.get("map_name") or "").lower()
+        if not map_key:
+            continue
+        bucket = difficulty_bucket(ev.get("difficulty"))
+        if bucket <= 0:
+            continue
+        cleared = int(ev.get("cleared_at") or 0)
+        era = 0 if bucket >= 8 and 0 < cleared < BRUTAL_RENAMED_AT else 1
+        slot = by_map.setdefault(map_key, {}).setdefault((bucket, era), {"count": 0, "lastAt": 0})
+        slot["count"] += 1
+        if cleared > int(slot["lastAt"]):
+            slot["lastAt"] = cleared
     maps_dir = _maps_dir()
     out: list[dict[str, Any]] = []
     for r in rows:
         map_name = str(r.get("map_name") or "")
         key = map_name.lower()
+        diffs = [
+            {"difficulty": bucket, "count": slot["count"], "lastAt": slot["lastAt"]}
+            for (bucket, _era), slot in sorted(
+                by_map.get(key, {}).items(),
+                key=lambda kv: (kv[0][0], kv[1]["lastAt"]),
+                reverse=True,
+            )
+        ]
         out.append(
             {
                 "map": key,
@@ -3476,6 +4018,7 @@ def _player_clears(con, steam_id: str) -> list[dict[str, Any]]:
                 "hasMapImage": bool(key) and (maps_dir / (key + ".jpg")).is_file(),
                 "count": int(r.get("clear_count") or 0),
                 "lastAt": int(r.get("last_cleared_at") or 0),
+                "difficulties": diffs,
             }
         )
     return out
@@ -3855,6 +4398,51 @@ class Handler(BaseHTTPRequestHandler):
         # Public: the landing page's Discord card.
         if path == "/api/stats/discord":
             self._send(200, build_public_discord())
+            return
+        # Public: recent map sessions for the landing page / history page.
+        if path == "/api/stats/sessions":
+            try:
+                limit = int((qs.get("limit") or ["30"])[0] or 30)
+            except ValueError:
+                limit = 30
+            try:
+                payload = recent_sessions(self.con, limit)
+            except Exception as exc:  # noqa: BLE001
+                print(f"sessions failed: {exc}", flush=True)
+                try:
+                    with LOCK:
+                        ensure_db(self.con)
+                    payload = recent_sessions(self.con, limit)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"sessions retry failed: {exc2}", flush=True)
+                    self._send(500, {"error": "database unavailable"})
+                    return
+            self._send(200, payload)
+            return
+        # Public: one map session with every stored player/session field.
+        if path.startswith("/api/stats/sessions/"):
+            raw_id = path[len("/api/stats/sessions/") :].strip("/")
+            try:
+                sid = int(raw_id)
+            except ValueError:
+                self._send(404, {"found": False, "error": "not found"})
+                return
+            try:
+                payload = session_detail(self.con, sid)
+            except Exception as exc:  # noqa: BLE001
+                print(f"session detail failed: {exc}", flush=True)
+                try:
+                    with LOCK:
+                        ensure_db(self.con)
+                    payload = session_detail(self.con, sid)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"session detail retry failed: {exc2}", flush=True)
+                    self._send(500, {"error": "database unavailable"})
+                    return
+            if not payload:
+                self._send(404, {"found": False, "error": "not found"})
+                return
+            self._send(200, payload)
             return
         # Public: the Vue app's player pages.
         if path == "/api/stats/top":

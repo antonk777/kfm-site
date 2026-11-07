@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { LOCALES, i18n, setLocale, t, type Locale } from "./i18n";
+import { SESSIONS_PUBLIC } from "./lib/flags";
 import { parseSearch } from "./lib/search";
 import { loadSteamUser, logoutSteam, profileTo, steamReady, steamUser } from "./lib/steam";
 import SteamMark from "./components/SteamMark.vue";
@@ -83,6 +84,7 @@ async function onSearch(): Promise<void> {
       <div class="header-tools" :class="{ open: menuOpen }">
         <nav class="header-nav">
           <router-link to="/">{{ t("nav.landing") }}</router-link>
+          <router-link v-if="SESSIONS_PUBLIC" to="/sessions">{{ t("nav.sessions") }}</router-link>
           <router-link to="/players">{{ t("nav.home") }}</router-link>
         </nav>
         <form class="search" @submit.prevent="onSearch">

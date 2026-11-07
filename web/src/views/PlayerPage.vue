@@ -3,14 +3,16 @@ import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchPlayer, resolveVanity, type PlayerPayload, type SessionInfo } from "../api";
 import {
-  difficultyName,
   fmtDate,
   fmtDateOnly,
   fmtNum,
 } from "../lib/format";
 import { t, i18n } from "../i18n";
 import { countryName } from "../data/countries";
+import DifficultyLabel from "../components/DifficultyLabel.vue";
 import PerkCard from "../components/PerkCard.vue";
+import { achIconSrc } from "../lib/achIcons";
+import { SESSIONS_PUBLIC } from "../lib/flags";
 
 const props = defineProps<{ id: string }>();
 
@@ -140,6 +142,15 @@ function waveText(s: SessionInfo): string {
 function perkNameOf(id: string): string {
   return t(`perk.${id}`) !== `perk.${id}` ? t(`perk.${id}`) : id;
 }
+
+function clearDiffParts(c: { count: number; difficulties?: { difficulty: number; count: number; lastAt: number }[] }) {
+  const parts = [...(c.difficulties ?? [])]
+    .filter((d) => d.count > 0 && d.difficulty > 0)
+    .sort((a, b) => b.difficulty - a.difficulty || b.lastAt - a.lastAt);
+  if (!parts.length) return [];
+  const single = parts.length === 1 && parts[0].count >= c.count;
+  return parts.map((d) => ({ ...d, showCount: !single }));
+}
 </script>
 
 <template>
@@ -176,9 +187,9 @@ function perkNameOf(id: string): string {
                 @error="avatarFailed = true"
               />
               <img
-                v-else-if="!avatarUrl"
+                v-else
                 class="avatar-placeholder"
-                src="/assets/skull.svg"
+                src="/assets/avatar-skull.svg"
                 alt=""
               />
             </div>
@@ -198,7 +209,10 @@ function perkNameOf(id: string): string {
                   {{ data.clan.name }}
                 </span>
                 <span v-if="data.admin" class="badge admin">{{ t("hero.admin") }}</span>
-                <span v-if="data.veteran" class="badge veteran">{{ t("hero.veteran") }}</span>
+                <span v-if="data.veteran" class="badge veteran" tabindex="0">
+                  {{ t("hero.veteran") }}
+                  <span class="badge-tip" role="tooltip">{{ t("hero.veteranHint") }}</span>
+                </span>
                 <span v-if="data.ban" class="badge banned">{{ t("hero.banned") }}</span>
                 <span v-if="data.country" class="badge flag" :title="countryName(data.country, i18n.locale)">
                   <span class="fi" :class="`fi-${data.country.toLowerCase()}`"></span>
@@ -253,58 +267,6 @@ function perkNameOf(id: string): string {
         </div>
       </section>
 
-      <!-- sessions -->
-      <h2 class="section-title">
-        {{ t("sessions.title") }}
-        <span v-if="data.sessions.length" class="count">{{ data.sessions.length }}</span>
-      </h2>
-      <p v-if="!data.sessions.length" class="empty-note">{{ t("sessions.empty") }}</p>
-      <div v-else class="panel" style="overflow-x: auto">
-        <table class="sessions-table">
-          <thead>
-            <tr>
-              <th>{{ t("sessions.map") }}</th>
-              <th>{{ t("sessions.date") }}</th>
-              <th>{{ t("sessions.outcome") }}</th>
-              <th>{{ t("sessions.perk") }}</th>
-              <th>{{ t("sessions.waves") }}</th>
-              <th>{{ t("sessions.duration") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(s, i) in data.sessions" :key="i">
-              <td>
-                <div class="map-cell">
-                  <img
-                    v-if="s.hasMapImage"
-                    class="map-thumb"
-                    :src="`/maps/${encodeURIComponent(s.map)}.jpg`"
-                    :alt="s.mapPretty"
-                    loading="lazy"
-                  />
-                  <div>
-                    <div>{{ s.mapPretty }}</div>
-                    <div style="color: var(--text-faint); font-size: 11.5px">
-                      {{ difficultyName(s.difficulty, s.startedAt) || "—" }}
-                      <template v-if="s.server"> · {{ s.server }}</template>
-                    </div>
-                  </div>
-                </div>
-              </td>
-              <td style="white-space: nowrap">{{ fmtDate(s.startedAt) }}</td>
-              <td>
-                <span class="outcome" :class="outcomeClass(s.outcome)">
-                  {{ t(`outcome.${s.outcome}`) !== `outcome.${s.outcome}` ? t(`outcome.${s.outcome}`) : s.outcome }}
-                </span>
-              </td>
-              <td>{{ s.perk ? perkNameOf(s.perk) : "—" }}</td>
-              <td>{{ waveText(s) }}</td>
-              <td>{{ fmtDuration(s.durationSec) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
       <!-- clears -->
       <h2 class="section-title">
         {{ t("clears.title") }}
@@ -321,11 +283,86 @@ function perkNameOf(id: string): string {
           />
           <div class="clear-shade"></div>
           <div class="clear-info">
-            <span class="map-name">{{ c.mapPretty }}</span>
+            <div class="clear-text">
+              <span class="map-name">{{ c.mapPretty }}</span>
+              <span class="clear-diff">
+                <template v-for="(d, i) in clearDiffParts(c)" :key="`${c.map}-${d.difficulty}-${d.lastAt}`">
+                  <template v-if="i"> · </template>
+                  <DifficultyLabel :level="d.difficulty" :at="d.lastAt" />
+                  <template v-if="d.showCount"> ×{{ d.count }}</template>
+                </template>
+              </span>
+            </div>
             <span class="times">{{ c.count }}</span>
           </div>
         </div>
       </section>
+
+      <!-- sessions -->
+      <template v-if="SESSIONS_PUBLIC">
+      <h2 class="section-title">
+        {{ t("sessions.title") }}
+        <span v-if="data.sessions.length" class="count">{{ data.sessions.length }}</span>
+      </h2>
+      <p v-if="!data.sessions.length" class="empty-note">{{ t("sessions.empty") }}</p>
+      <div v-else class="panel" style="overflow-x: auto">
+        <table class="sessions-table">
+          <thead>
+            <tr>
+              <th>{{ t("sessions.map") }}</th>
+              <th>{{ t("sessions.difficulty") }}</th>
+              <th>{{ t("sessions.date") }}</th>
+              <th>{{ t("sessions.outcome") }}</th>
+              <th>{{ t("sessions.perk") }}</th>
+              <th>{{ t("sessions.waves") }}</th>
+              <th>{{ t("sessions.duration") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(s, i) in data.sessions"
+              :key="s.id || i"
+              :class="{ link: s.id > 0 }"
+              @click="s.id > 0 && $router.push(`/sessions/${s.id}`)"
+            >
+              <td>
+                <div class="map-cell">
+                  <img
+                    v-if="s.hasMapImage"
+                    class="map-thumb"
+                    :src="`/maps/${encodeURIComponent(s.map)}.jpg`"
+                    :alt="s.mapPretty"
+                    loading="lazy"
+                  />
+                  <div>
+                    <div>
+                      <router-link
+                        v-if="s.id > 0"
+                        class="map-link"
+                        :to="`/sessions/${s.id}`"
+                        @click.stop
+                      >{{ s.mapPretty }}</router-link>
+                      <template v-else>{{ s.mapPretty }}</template>
+                    </div>
+                    <div v-if="s.server" style="color: var(--text-faint); font-size: 11.5px">{{ s.server }}</div>
+                  </div>
+                </div>
+              </td>
+              <td style="white-space: nowrap"><DifficultyLabel :level="s.difficulty" :at="s.startedAt" /></td>
+              <td style="white-space: nowrap">{{ fmtDate(s.startedAt) }}</td>
+              <td>
+                <span class="outcome" :class="outcomeClass(s.outcome)">
+                  {{ t(`outcome.${s.outcome}`) !== `outcome.${s.outcome}` ? t(`outcome.${s.outcome}`) : s.outcome }}
+                </span>
+              </td>
+              <td>{{ s.perk ? perkNameOf(s.perk) : "—" }}</td>
+              <td>{{ waveText(s) }}</td>
+              <td>{{ fmtDuration(s.durationSec) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      </template>
 
       <!-- achievements -->
       <h2 class="section-title">
@@ -339,14 +376,23 @@ function perkNameOf(id: string): string {
           class="panel ach-tile"
           :class="{ done: a.completed }"
         >
-          <div class="ach-name">{{ a.name }}</div>
-          <div class="ach-desc">{{ a.desc }}</div>
-          <div class="ach-bar">
-            <i :style="{ width: `${a.den > 0 ? Math.min(100, Math.round((a.progress / a.den) * 100)) : 0}%` }" />
-          </div>
-          <div class="ach-meta">
-            <span>{{ a.completed ? "✓" : `${a.progress}/${a.den || 0}` }}</span>
-            <span v-if="!a.completed">{{ t("ach.locked") }}</span>
+          <img
+            v-if="achIconSrc(a.index)"
+            class="ach-icon"
+            :src="achIconSrc(a.index)"
+            alt=""
+            loading="lazy"
+          />
+          <div class="ach-body">
+            <div class="ach-name">{{ a.name }}</div>
+            <div class="ach-desc">{{ a.desc }}</div>
+            <div class="ach-bar">
+              <i :style="{ width: `${a.den > 0 ? Math.min(100, Math.round((a.progress / a.den) * 100)) : 0}%` }" />
+            </div>
+            <div class="ach-meta">
+              <span>{{ a.completed ? "✓" : `${a.progress}/${a.den || 0}` }}</span>
+              <span v-if="!a.completed">{{ t("ach.locked") }}</span>
+            </div>
           </div>
         </div>
       </section>
@@ -418,7 +464,6 @@ function perkNameOf(id: string): string {
   text-transform: uppercase;
   color: var(--text-dim);
   border: 1px solid var(--border);
-  border-top: none;
   display: inline-flex;
   gap: 8px;
   align-items: center;
@@ -470,11 +515,11 @@ function perkNameOf(id: string): string {
   background: radial-gradient(circle at 50% 40%, #1c1c24, #0c0c10);
 }
 .avatar-frame .avatar-placeholder {
-  width: 52%;
-  height: 52%;
+  width: auto;
+  height: 78%;
   object-fit: contain;
-  opacity: 0.35;
-  filter: drop-shadow(0 0 8px rgba(198, 18, 23, 0.5));
+  opacity: 0.82;
+  filter: drop-shadow(0 0 8px rgba(198, 18, 23, 0.45));
 }
 
 .nick {
@@ -498,7 +543,44 @@ function perkNameOf(id: string): string {
   text-transform: uppercase;
 }
 .badge.admin { color: #ff8a8d; border-color: #7d2023; background: rgba(198, 18, 23, 0.22); }
-.badge.veteran { color: var(--gold-bright); border-color: #7d6118; background: rgba(199, 139, 18, 0.14); }
+.badge.veteran {
+  position: relative;
+  color: var(--gold-bright);
+  border-color: #7d6118;
+  background: rgba(199, 139, 18, 0.14);
+  cursor: help;
+}
+.badge.veteran .badge-tip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 6;
+  width: max-content;
+  max-width: min(280px, 70vw);
+  padding: 8px 10px 7px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+  text-align: left;
+  color: var(--text);
+  background: #1a1a22;
+  border: 1px solid #7d6118;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+}
+.badge.veteran:hover .badge-tip,
+.badge.veteran:focus-visible .badge-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
 .badge.banned { color: #c86a6a; border-color: #4a1b1b; background: rgba(120, 30, 30, 0.3); }
 .badge.clan { color: var(--blue); border-color: #174a5c; background: rgba(92, 200, 230, 0.1); }
 .badge.flag { color: var(--text); border-color: var(--border-bright); background: var(--panel); }
@@ -596,6 +678,9 @@ function perkNameOf(id: string): string {
   font-weight: 400;
 }
 .sessions-table tbody tr:hover { background: rgba(255, 255, 255, 0.025); }
+.sessions-table tbody tr.link { cursor: pointer; }
+.map-link { color: var(--text); text-decoration: none; }
+.map-link:hover { color: #fff; }
 .map-cell { display: flex; align-items: center; gap: 10px; min-width: 210px; }
 .map-thumb {
   width: 76px;
@@ -616,8 +701,7 @@ function perkNameOf(id: string): string {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
-.clear-card { position: relative; overflow: hidden; height: 136px; display: block; }
-.clear-card:hover { text-decoration: none; }
+.clear-card { position: relative; overflow: hidden; height: 152px; display: block; }
 .clear-card img {
   position: absolute;
   inset: 0;
@@ -625,9 +709,7 @@ function perkNameOf(id: string): string {
   height: 100%;
   object-fit: cover;
   filter: saturate(0.9) brightness(0.9);
-  transition: transform 0.25s ease;
 }
-.clear-card:hover img { transform: scale(1.05); }
 .clear-shade {
   position: absolute;
   inset: 0;
@@ -640,10 +722,21 @@ function perkNameOf(id: string): string {
   bottom: 0;
   padding: 10px 12px;
   display: flex;
-  align-items: baseline;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 8px;
 }
+.clear-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.clear-info .clear-diff {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold-bright);
+  text-shadow: 0 1px 3px #000;
+  line-height: 1.25;
+}
+.clear-info .clear-diff:empty { display: none; }
 .clear-info .map-name {
   font-family: var(--font-display);
   font-size: 18px;
@@ -662,14 +755,31 @@ function perkNameOf(id: string): string {
 
 .ach-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
   gap: 8px;
 }
-.ach-tile { padding: 10px 12px; border-left: 3px solid var(--border); }
+.ach-tile {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+}
 .ach-tile.done {
   border-left-color: var(--accent);
   background: linear-gradient(180deg, #1d1517, #151012);
 }
+.ach-icon {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  object-fit: contain;
+  display: block;
+}
+.ach-tile:not(.done) .ach-icon {
+  filter: saturate(0.2) brightness(0.72);
+}
+.ach-body { min-width: 0; flex: 1; }
 .ach-name { font-weight: 600; font-size: 13px; color: var(--text); }
 .ach-desc { font-size: 11.5px; color: var(--text-faint); margin: 2px 0 6px; }
 .ach-tile.done .ach-desc { color: var(--text-dim); }
