@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Dark-themed port of the production landing page (site/index.html):
+// Landing page:
 // server monitor + Discord card (live data from the production stats API),
 // Companion download block and release notes.
 import { onMounted, onUnmounted, ref } from "vue";
@@ -79,6 +79,7 @@ let sessionsTimer: ReturnType<typeof setInterval> | undefined;
 let discordTimer: ReturnType<typeof setInterval> | undefined;
 
 function waveCaption(srv: ServerInfo): string {
+  if (srv.map && (!srv.wave || srv.wave <= 0)) return t("srv.lobby");
   if (srv.finalWave > 0 && srv.wave > srv.finalWave) return t("srv.bossWave");
   if (srv.wave > 0) return `${t("srv.wave")} ${srv.wave}${srv.finalWave > 0 ? " / " + srv.finalWave : ""}`;
   return "";
@@ -134,23 +135,12 @@ function joinUrl(srv: ServerInfo): string {
     : `steam://run/1250//${srv.host}:${srv.port}`;
 }
 
-function sameServer(srv: ServerInfo, name: string): boolean {
-  const want = name.trim().toLowerCase();
-  if (!want) return false;
-  const label = (srv.label || "").trim().toLowerCase();
-  const id = (srv.id || "").trim().toLowerCase();
-  return want === label || want === id || want.replace(/\s+/g, "") === label.replace(/\s+/g, "");
-}
-
 function sessionHref(srv: ServerInfo): string {
   if (!SESSIONS_PUBLIC || !srv.map) return "";
-  if (typeof srv.sessionId === "number") {
-    return srv.sessionId > 0 ? `/sessions/${srv.sessionId}` : "";
-  }
-  const live = (sessions.value ?? []).find(
-    (s) => s.outcome === "playing" && s.id > 0 && sameServer(srv, s.server),
-  );
-  return live ? `/sessions/${live.id}` : "";
+  // Wave 0 is the lobby. No link until this match has a real session row.
+  if (!srv.wave || srv.wave <= 0) return "";
+  if (!srv.sessionId || srv.sessionId <= 0) return "";
+  return `/sessions/${srv.sessionId}`;
 }
 
 function togglePlayers(id: string): void {

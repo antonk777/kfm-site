@@ -64,7 +64,7 @@ if id caddy >/dev/null 2>&1; then
   chown -R caddy:caddy "$(dirname "${SITE_LOG}")"
 fi
 
-# Public root is the Vue build (web/dist), not the legacy site/index.html.
+# Public root is the Vue build (web/dist).
 # Prefer a dist already present (deploy-site.py ships one). Otherwise build here.
 DIST_DIR="${SCRIPT_DIR}/web/dist"
 if [ ! -f "${DIST_DIR}/index.html" ]; then

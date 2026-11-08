@@ -6,7 +6,6 @@ Public download page for **KFM Companion** at [https://kf-maniacs.com/](https://
 |-------|------|
 | `web/` | Vue 3 SPA (landing, `/players`, profiles); `npm run build` → `web/dist` |
 | `web/dist` | Public document root (gitignored); shipped by `deploy-site.py` / built by `deploy.sh` |
-| `index.html` | Legacy static landing — kept in the repo, **not** published to `SITE_ROOT` |
 | `maps/*.jpg` | Map previews for the monitor, from `tools/gen_map_shots.py` in kfm-mut |
 | `fetch-companion.mjs` | Pulls latest `.exe` from private `antonk777/KFMLauncher` releases |
 | `release.json` | Written at sync time; page reads `tag` / `file` / changelog |

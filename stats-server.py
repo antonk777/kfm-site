@@ -593,6 +593,14 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
     tick_ms = int(num(p.get("worstTick"), -1))
     ts = now_ts()
+    # Lobby sends no key. Anything this server still has open belongs to the
+    # process that died. A keyed push keeps that match and closes older ones.
+    close_replaced_sessions(
+        con,
+        server,
+        str(p.get("key") or p.get("session_key") or ""),
+        ts,
+    )
     difficulty = float(num(p.get("diff"), 0.0))
     if difficulty <= 0 and map_name:
         difficulty = _session_difficulty(con, server, map_name, ts)
@@ -632,6 +640,8 @@ def ingest_live(con, p: dict[str, Any]) -> None:
         "worstTick": tick_ms,
         "ts": ts,
         "source": "live",
+        # Empty in the lobby. The server card links only when this key has a row.
+        "sessionKey": str(p.get("key") or p.get("session_key") or "").strip(),
     }
     with _LIVE_LOCK:
         if tick_ms >= 0:
@@ -717,6 +727,7 @@ def _live_from_db(con, server: str) -> dict[str, Any] | None:
         "worstTick": -1,
         "ts": int(row["started_at"] or 0),
         "source": "db",
+        "sessionId": int(row["id"]),
     }
 
 
@@ -986,36 +997,46 @@ def _attach_public_perk_levels(con, servers: list[dict[str, Any]]) -> None:
 
 
 def _attach_open_sessions(con, servers: list[dict[str, Any]]) -> None:
-    """sessionId of the map still open on each slot. 0 when the map has ended."""
-    if not SESSIONS_PUBLIC or not servers:
+    """Link a card to the match the server is actually playing.
+
+    The lobby push has no session key, and a key whose row has not been
+    written yet stays unlinked. A leftover open row on the slot is not used.
+    """
+    if not servers:
         return
-    names: list[str] = []
+    pending: list[tuple[dict[str, Any], str]] = []
     for srv in servers:
-        names.extend(server_name_variants(str(srv.get("id") or "")))
-    names = [n for n in dict.fromkeys(names) if n]
-    if not names:
+        key = str(srv.pop("sessionKey", "") or "").strip()
+        if not SESSIONS_PUBLIC:
+            srv["sessionId"] = 0
+            continue
+        # No key means the lobby (or a push from before this match). A key with
+        # wave 0 is the same. Leave a DB-fallback id in place only when the
+        # card was built from that row and the push had no key.
+        if not key or int(srv.get("wave") or 0) <= 0:
+            if key:
+                srv["sessionId"] = 0
+            continue
+        srv["sessionId"] = 0
+        pending.append((srv, key))
+    if not pending:
         return
-    placeholders = ",".join(["%s"] * len(names))
+    keys = list(dict.fromkeys(key for _, key in pending))
+    placeholders = ",".join(["%s"] * len(keys))
     rows = _query(
         con,
         f"""
-        SELECT `id`, `server_name`
+        SELECT `id`, `session_key`
         FROM `site_map_sessions`
-        WHERE `server_name` IN ({placeholders})
+        WHERE `session_key` IN ({placeholders})
           AND `ended_at`=0
-          AND `started_at` >= %s
-          {nonempty_session_sql()}{public_session_sql()}
-        ORDER BY `started_at` DESC
+          {public_session_sql()}
         """,
-        (*names, now_ts() - _OPEN_SESSION_MAX_SEC),
+        tuple(keys),
     )
-    by_slot: dict[str, int] = {}
-    for row in rows:
-        slot = canon_server_name(row.get("server_name"))
-        if slot and slot not in by_slot:
-            by_slot[slot] = int(row["id"])
-    for srv in servers:
-        srv["sessionId"] = by_slot.get(str(srv.get("id") or ""), 0)
+    by_key = {str(row["session_key"]): int(row["id"]) for row in rows}
+    for srv, key in pending:
+        srv["sessionId"] = by_key.get(key, 0)
 
 
 def build_public_servers() -> dict[str, Any]:
@@ -1029,6 +1050,10 @@ def build_public_servers() -> dict[str, Any]:
         live = get_live_status(slot)
         port = SLOT_PORTS.get(slot, (0, 0))[0]
         players = [_public_live_player(p) for p in (live.get("players") or [])]
+        # A DB fallback is that open row. A live push contributes a key only;
+        # the link is filled in once that key has a row.
+        session_id = int(live.get("sessionId") or 0) if live.get("source") == "db" else 0
+        session_key = "" if session_id else str(live.get("sessionKey") or "")
         out.append(
             {
                 "id": slot,
@@ -1046,7 +1071,8 @@ def build_public_servers() -> dict[str, Any]:
                 "players": players,
                 "stale": bool(live.get("stale")),
                 "updated": int(live.get("ts") or 0),
-                "sessionId": 0,
+                "sessionId": session_id,
+                "sessionKey": session_key,
             }
         )
     con = getattr(Handler, "con", None)
@@ -1059,6 +1085,8 @@ def build_public_servers() -> dict[str, Any]:
             _attach_public_perk_levels(con, out)
         except Exception as exc:  # noqa: BLE001
             print(f"kfm-stats: perk levels: {exc}", flush=True)
+    for srv in out:
+        srv.pop("sessionKey", None)
     return {"ts": now_ts(), "servers": out}
 
 
@@ -1660,6 +1688,76 @@ def touch_player(con, steam: str, name: str) -> None:
         )
 
 
+def _session_key_started(key: str) -> int:
+    """Unix time baked into slot:map:unix. 0 when the key has none."""
+    tail = (key or "").rsplit(":", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return 0
+
+
+def close_replaced_sessions(con, server: str, keep_key: str, at: int) -> None:
+    """End plays this server left open across a restart.
+
+    A killed process never sends map_close. The next live push or map open
+    is the proof that those rows are over. A lobby push has no key and only
+    sweeps rows older than a reordered packet, so it cannot end a match that
+    just started.
+    """
+    if not server:
+        return
+    keep_key = (keep_key or "").strip()
+    at = int(at or 0) or now_ts()
+    if keep_key:
+        cutoff = _session_key_started(keep_key) or at
+        ended = cutoff
+    else:
+        cutoff = at - 30
+        ended = at
+    if cutoff <= 0:
+        return
+    names = server_name_variants(server)
+    placeholders = ",".join(["%s"] * len(names))
+    with LOCK:
+        cur = con.cursor()
+        cur.execute(
+            f"""
+            SELECT `id`, `started_at` FROM `site_map_sessions`
+            WHERE `server_name` IN ({placeholders})
+              AND `ended_at`=0
+              AND `started_at` < %s
+              AND `session_key`<>%s
+            """,
+            (*names, cutoff, keep_key),
+        )
+        rows = list(cur.fetchall())
+        for row in rows:
+            sid = int(row["id"])
+            started = int(row["started_at"] or 0)
+            stop = ended if started <= 0 or ended >= started else started
+            dur = max(0, stop - started) if started else 0
+            cur.execute(
+                """
+                UPDATE `site_map_sessions`
+                SET `ended_at`=%s, `duration_sec`=%s, `outcome`='unknown'
+                WHERE `id`=%s AND `ended_at`=0
+                """,
+                (stop, dur, sid),
+            )
+            cur.execute(
+                """
+                UPDATE `site_session_players`
+                SET `left_at`=%s,
+                    `duration_sec`=GREATEST(0, %s - `joined_at`),
+                    `outcome`='leave'
+                WHERE `session_id`=%s AND `left_at`=0
+                """,
+                (stop, stop, sid),
+            )
+            print(f"kfm-stats: closed replaced session {sid} on {server}", flush=True)
+
+
 def ensure_map_session(con, p: dict[str, Any]) -> int:
     """Insert/update map session by session_key; return session id."""
     key = str(p.get("key") or p.get("session_key") or "").strip()
@@ -1695,6 +1793,12 @@ def ensure_map_session(con, p: dict[str, Any]) -> int:
 def ingest_map_open(con, p: dict[str, Any]) -> None:
     with LOCK:
         ensure_map_session(con, p)
+    close_replaced_sessions(
+        con,
+        server_from_payload(p),
+        str(p.get("key") or p.get("session_key") or ""),
+        int(num(p.get("started_at"), now_ts())),
+    )
 
 
 def ingest_map_close(con, p: dict[str, Any]) -> None:
