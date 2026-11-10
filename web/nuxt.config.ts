@@ -41,23 +41,13 @@ export default defineNuxtConfig({
     mapsDir: MAPS_DIR,
     statsProxy: STATS_PROXY,
   },
-  // All /api/stats* traffic goes to the Python stats-server. Nuxt never
-  // reimplements those handlers — production Caddy does the same split.
+  // Production node server. Dev does not use these: the Vite proxy below
+  // owns /api so a UI reload does not restart the connection.
   routeRules: {
     "/api/stats/**": { proxy: `${STATS_PROXY}/api/stats/**` },
     "/statistics/**": { proxy: `${STATS_PROXY}/statistics/**` },
     "/release.json": { proxy: "https://kf-maniacs.com/release.json" },
     "/mod-changelog.json": { proxy: "https://kf-maniacs.com/mod-changelog.json" },
-  },
-  nitro: {
-    // Dev proxy strips the matched prefix, so the target must already include it.
-    // "/api/stats/servers" is forwarded as "/servers" onto this target.
-    devProxy: {
-      "/api/stats": { target: `${STATS_PROXY}/api/stats`, changeOrigin: true },
-      "/statistics": { target: `${STATS_PROXY}/statistics`, changeOrigin: true },
-      "/release.json": { target: "https://kf-maniacs.com/release.json", changeOrigin: true },
-      "/mod-changelog.json": { target: "https://kf-maniacs.com/mod-changelog.json", changeOrigin: true },
-    },
   },
   typescript: {
     strict: true,
@@ -67,6 +57,14 @@ export default defineNuxtConfig({
     server: {
       // Map previews live in site/maps (shared with the old site), not public/.
       fs: { allow: [ROOT, resolve(ROOT, "..")] },
+      // Stays up across Vue hot reload. Nitro's own proxy died on every
+      // server restart, and the pages then kept the failed response.
+      proxy: {
+        "/api/stats": { target: STATS_PROXY, changeOrigin: true },
+        "/statistics": { target: STATS_PROXY, changeOrigin: true },
+        "/release.json": { target: "https://kf-maniacs.com", changeOrigin: true },
+        "/mod-changelog.json": { target: "https://kf-maniacs.com", changeOrigin: true },
+      },
     },
   },
 });

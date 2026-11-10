@@ -3520,6 +3520,10 @@ def _fresh_live_players() -> dict[str, dict[str, str]]:
         online = int(live.get("online") or len(players))
         cap = int(live.get("maxPlayers") or 0) or MAX_PLAYERS
         full = "1" if cap > 0 and online >= cap else ""
+        try:
+            diff = str(float(live.get("difficulty") or 0))
+        except (TypeError, ValueError):
+            diff = "0"
         for p in players:
             steam = str(p.get("steam") or p.get("steamId") or "").strip()
             if not _STEAM_ID_RE.fullmatch(steam) or steam in found:
@@ -3531,6 +3535,7 @@ def _fresh_live_players() -> dict[str, dict[str, str]]:
                 "perk": str(p.get("perk") or ""),
                 "join": join,
                 "full": full,
+                "difficulty": diff,
             }
     return found
 
@@ -3600,6 +3605,7 @@ def _friend_records(
                 "perk": str(here.get("perk") or ""),
                 "join": str(here.get("join") or "") if playing else "",
                 "full": playing and here.get("full") == "1",
+                "difficulty": float(here.get("difficulty") or 0) if playing else 0,
             }
         )
     rows.sort(key=lambda r: (0 if r["playing"] else 1, str(r["name"]).casefold()))
@@ -3871,21 +3877,74 @@ def delete_push_subscription(con, steamid: str, endpoint: str) -> None:
     )
 
 
-def _push_copy(locale: str, name: str, server: str, map_name: str) -> tuple[str, str]:
-    title = {
-        "en": "{name} joined {server}",
-        "ru": "{name} зашёл на {server}",
-        "zh": "{name} 加入了 {server}",
-        "es": "{name} entró en {server}",
-        "pt": "{name} entrou em {server}",
-        "de": "{name} ist {server} beigetreten",
-        "fr": "{name} a rejoint {server}",
-        "pl": "{name} dołączył do {server}",
-        "sv": "{name} gick med i {server}",
-        "ja": "{name} が {server} に参加しました",
-        "it": "{name} è entrato in {server}",
-    }.get(locale, "{name} joined {server}")
-    return title.format(name=name, server=server), _pretty_push_map(map_name)
+def _push_copy(locale: str, name: str, server: str, map_name: str, difficulty: Any = 0) -> tuple[str, str]:
+    place = _pretty_push_map(map_name) or server
+    try:
+        level = float(difficulty or 0)
+    except (TypeError, ValueError):
+        level = 0.0
+    diff_name = difficulty_name(level)
+    words = {
+        "en": {
+            "Beginner": "Beginner",
+            "Normal": "Normal",
+            "Hard": "Hard",
+            "Suicidal": "Suicidal",
+            "Hell on Earth": "Hell on Earth",
+            "Brutal": "Brutal",
+        },
+        "ru": {
+            "Beginner": "Новичок",
+            "Normal": "Нормальный",
+            "Hard": "Сложный",
+            "Suicidal": "Суицидальный",
+            "Hell on Earth": "Ад на Земле",
+            "Brutal": "Брутальный",
+        },
+        "zh": {
+            "Beginner": "新手",
+            "Normal": "普通",
+            "Hard": "困难",
+            "Suicidal": "自杀",
+            "Hell on Earth": "人间地狱",
+            "Brutal": "残酷",
+        },
+        "es": {
+            "Beginner": "Principiante",
+            "Normal": "Normal",
+            "Hard": "Difícil",
+            "Suicidal": "Suicida",
+            "Hell on Earth": "Infierno en la Tierra",
+            "Brutal": "Brutal",
+        },
+        "pt": {
+            "Beginner": "Iniciante",
+            "Normal": "Normal",
+            "Hard": "Difícil",
+            "Suicidal": "Suicida",
+            "Hell on Earth": "Inferno na Terra",
+            "Brutal": "Brutal",
+        },
+    }
+    word = (words.get(locale) or words["en"]).get(diff_name, "")
+    if place and word:
+        place = f"{place}, {word}"
+    elif word:
+        place = word
+    body = {
+        "en": "Playing on {place}. Click to join.",
+        "ru": "Играет на {place}. Нажмите, чтобы присоединиться.",
+        "zh": "正在玩 {place}。点击加入。",
+        "es": "Jugando en {place}. Pulsa para unirte.",
+        "pt": "Jogando em {place}. Clique para entrar.",
+        "de": "Spielt auf {place}. Klicken, um beizutreten.",
+        "fr": "Joue sur {place}. Cliquez pour rejoindre.",
+        "pl": "Gra na {place}. Kliknij, aby dołączyć.",
+        "sv": "Spelar på {place}. Klicka för att gå med.",
+        "ja": "{place} をプレイ中。クリックして参加。",
+        "it": "Sta giocando su {place}. Clicca per unirti.",
+    }.get(locale, "Playing on {place}. Click to join.")
+    return name, body.format(place=place)
 
 
 def _pretty_push_map(name: str) -> str:
@@ -3936,7 +3995,13 @@ def _friend_push_once(con) -> None:
             slug = vanity if re.fullmatch(r"[A-Za-z0-9_-]{2,32}", vanity) else item["steamId"]
             for device in devices:
                 locale = str(device.get("locale") or "en")
-                title, body = _push_copy(locale, name, str(item.get("server") or ""), str(item.get("map") or ""))
+                title, body = _push_copy(
+                    locale,
+                    name,
+                    str(item.get("server") or ""),
+                    str(item.get("map") or ""),
+                    item.get("difficulty") or 0,
+                )
                 payload = json.dumps(
                     {
                         "title": title,

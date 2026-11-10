@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchPlayer, resolveVanity, type PlayerPayload, type SessionInfo } from "~/api";
 import {
   fmtDate,
   fmtDateOnly,
   fmtNum,
+  prettyMap,
 } from "~/lib/format";
 import { t, i18n } from "~/i18n";
 import { countryName } from "~/data/countries";
@@ -17,9 +18,13 @@ import { steamUser } from "~/lib/steam";
 import { setPageTitle } from "~/title";
 import FriendsStrip from "~/components/FriendsStrip.vue";
 
-const props = defineProps<{ id: string }>();
-
+const route = useRoute();
 const router = useRouter();
+
+const playerId = computed(() => {
+  const raw = route.params.id;
+  return (Array.isArray(raw) ? raw[0] : raw) || "";
+});
 
 const data = ref<PlayerPayload | null>(null);
 const loading = ref(true);
@@ -32,16 +37,18 @@ async function load() {
   try {
     // A non-numeric id is a Steam custom URL name: resolve it to SteamID64
     // for the data lookup, but keep the custom URL in the address bar.
-    let steamId = props.id;
-    if (!/^\d+$/.test(props.id)) {
-      const resolved = await resolveVanity(props.id);
+    const id = playerId.value;
+    if (!id) return;
+    let steamId = id;
+    if (!/^\d+$/.test(id)) {
+      const resolved = await resolveVanity(id);
       if (!resolved) return; // unknown custom URL -> "not found"
       steamId = resolved;
     }
     data.value = await fetchPlayer(steamId);
     // Canonical URL: redirect SteamID64 / old KFM-id pages to the player's
     // custom Steam URL when they have one.
-    if (/^\d+$/.test(props.id) && data.value?.vanity) {
+    if (/^\d+$/.test(id) && data.value?.vanity && playerId.value === id) {
       router.replace(`/players/${data.value.vanity}`);
     }
   } catch {
@@ -51,7 +58,7 @@ async function load() {
   }
 }
 
-watch(() => props.id, load, { immediate: true });
+watch(playerId, load, { immediate: true });
 
 const isMine = computed(() => {
   const mine = steamUser.value?.steamId || "";
@@ -78,6 +85,8 @@ const skinUrl = computed(() => {
     : "/assets/skins/unknown.png";
 });
 
+const skinLabel = computed(() => (data.value?.skinName || "").replace(/_/g, " "));
+
 const avatarUrl = computed(() => {
   const d = data.value;
   return d && /^\d{16,20}$/.test(d.steamId)
@@ -86,7 +95,7 @@ const avatarUrl = computed(() => {
 });
 
 const avatarFailed = ref(false);
-watch(() => props.id, () => (avatarFailed.value = false));
+watch(playerId, () => (avatarFailed.value = false));
 
 const steamUrl = computed(() => {
   const d = data.value;
@@ -94,6 +103,95 @@ const steamUrl = computed(() => {
     ? `https://steamcommunity.com/profiles/${d.steamId}`
     : "";
 });
+
+interface LiveSeat {
+  label: string;
+  map: string;
+  mapFile: string;
+  difficulty: number;
+  wave: number;
+  finalWave: number;
+  online: number;
+  maxPlayers: number;
+  join: string;
+  full: boolean;
+}
+
+interface LiveServer {
+  id: string;
+  label?: string;
+  map?: string;
+  difficulty?: number;
+  wave?: number;
+  finalWave?: number;
+  online?: number;
+  maxPlayers?: number;
+  stale?: boolean;
+  steam?: string | { listed?: boolean };
+  players?: { steamId?: string; steam?: string }[];
+}
+
+const live = ref<LiveSeat | null>(null);
+let liveTimer = 0;
+
+function seatFor(servers: LiveServer[], steamId: string): LiveSeat | null {
+  for (const srv of servers) {
+    if (srv.stale) continue;
+    const here = (srv.players || []).some((p) => (p.steamId || p.steam || "") === steamId);
+    if (!here) continue;
+    const cap = srv.maxPlayers || 6;
+    const online = srv.online || 0;
+    const join = typeof srv.steam === "string" && srv.steam.startsWith("steam://run/") ? srv.steam : "";
+    return {
+      label: srv.label || srv.id,
+      map: srv.map ? prettyMap(srv.map) : "",
+      mapFile: srv.map || "",
+      difficulty: Number(srv.difficulty) || 0,
+      wave: Number(srv.wave) || 0,
+      finalWave: Number(srv.finalWave) || 0,
+      online,
+      maxPlayers: cap,
+      join,
+      full: cap > 0 && online >= cap,
+    };
+  }
+  return null;
+}
+
+async function pollLive(): Promise<void> {
+  const steamId = data.value?.steamId || "";
+  if (!/^\d{16,20}$/.test(steamId)) {
+    live.value = null;
+    return;
+  }
+  try {
+    const res = await fetch("/api/stats/servers", { cache: "no-store" });
+    if (!res.ok) return;
+    const payload = (await res.json()) as { servers?: LiveServer[] };
+    live.value = seatFor(payload.servers || [], steamId);
+  } catch {
+    // Keep the last seat until the next poll.
+  }
+}
+
+const liveWave = computed(() => {
+  const seat = live.value;
+  if (!seat) return "";
+  if (seat.map && seat.wave <= 0) return t("srv.lobby");
+  if (seat.finalWave > 0 && seat.wave > seat.finalWave) return t("srv.bossWave");
+  if (seat.wave > 0) return `${t("srv.wave")} ${seat.wave}${seat.finalWave > 0 ? " / " + seat.finalWave : ""}`;
+  return "";
+});
+
+const shotFailed = ref(false);
+watch(() => live.value?.mapFile, () => {
+  shotFailed.value = false;
+});
+
+onMounted(() => {
+  liveTimer = window.setInterval(() => void pollLive(), 10000);
+});
+onBeforeUnmount(() => window.clearInterval(liveTimer));
 
 // Combat stats merged into the top strip (Kills is already a strip cell).
 interface StripCell {
@@ -198,48 +296,52 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
       <!-- profile: identity (avatar + skin) then top stats and perks -->
       <section class="panel profile">
         <div class="identity">
-          <div class="identity-top">
-            <div class="avatar-frame" :class="{ placeholder: !avatarUrl || avatarFailed }">
-              <img
-                v-if="avatarUrl && !avatarFailed"
-                :src="avatarUrl"
-                alt="Steam avatar"
-                @error="avatarFailed = true"
-              />
-              <img
-                v-else
-                class="avatar-placeholder"
-                src="/assets/avatar-skull.svg"
-                alt=""
-              />
-            </div>
-            <div v-if="data.skinName" class="skin-mini">
-              <div class="skin-mini-frame">
-                <img :src="skinUrl" :alt="data.skinName" />
+          <div class="identity-top" :class="{ 'has-skin': data.hasSkin }">
+            <div class="avatar-slot">
+              <div class="avatar-frame" :class="{ placeholder: !avatarUrl || avatarFailed }">
+                <img
+                  v-if="avatarUrl && !avatarFailed"
+                  :src="avatarUrl"
+                  alt="Steam avatar"
+                  @error="avatarFailed = true"
+                />
+                <img
+                  v-else
+                  class="avatar-placeholder"
+                  src="/assets/avatar-skull.svg"
+                  alt=""
+                />
               </div>
-              <div class="skin-plate">
-                {{ t("hero.skin") }}
-                <b>{{ data.skinName.replace(/_/g, " ") }}</b>
+            </div>
+            <div v-if="data.hasSkin" class="skin-mini" tabindex="0" :data-tip="skinLabel">
+              <div class="skin-mini-frame">
+                <img :src="skinUrl" :alt="skinLabel" />
               </div>
             </div>
             <div style="min-width: 0">
               <h1 class="nick">{{ data.name }}</h1>
-              <div class="badges">
-                <span v-if="data.clan" class="badge clan" :title="data.clan.leader ? t('hero.clanLeader') : ''">
-                  {{ data.clan.name }}
-                </span>
-                <span v-if="data.admin" class="badge admin">{{ t("hero.admin") }}</span>
-                <span v-if="data.veteran" class="badge veteran" tabindex="0">
-                  {{ t("hero.veteran") }}
-                  <span class="badge-tip" role="tooltip">{{ t("hero.veteranHint") }}</span>
-                </span>
-                <span v-if="data.ban" class="badge banned">{{ t("hero.banned") }}</span>
-                <span v-if="data.country" class="badge flag" :title="countryName(data.country, i18n.locale)">
+              <div class="meta-line">
+                <template v-if="data.clan">
+                  <span :title="data.clan.leader ? t('hero.clanLeader') : undefined">{{ data.clan.name }}</span>
+                  <span class="sep">•</span>
+                </template>
+                <template v-if="data.admin">
+                  {{ t("hero.admin") }}
+                  <span class="sep">•</span>
+                </template>
+                <template v-if="data.veteran">
+                  <span :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
+                  <span class="sep">•</span>
+                </template>
+                <template v-if="data.ban">
+                  {{ t("hero.banned") }}
+                  <span class="sep">•</span>
+                </template>
+                <template v-if="data.country">
                   <span class="fi" :class="`fi-${data.country.toLowerCase()}`"></span>
                   {{ countryName(data.country, i18n.locale) }}
-                </span>
-              </div>
-              <div class="meta-line">
+                  <span class="sep">•</span>
+                </template>
                 <b>{{ t("hero.id") }}</b> {{ data.id }}
                 <span class="sep">•</span>
                 <b>{{ t("hero.playsSince") }}</b>
@@ -253,13 +355,37 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                 <template v-if="data.ban.until"> ({{ fmtDate(data.ban.until ? Math.floor(new Date(data.ban.until.replace(' ', 'T') + 'Z').getTime() / 1000) : 0) }})</template>
                 <template v-if="data.ban.adminName"> — {{ data.ban.adminName }}</template>
               </div>
-              <div style="margin: 12px 0 22px">
+              <div class="profile-actions">
                 <a v-if="steamUrl" class="steam-btn" :href="steamUrl" target="_blank" rel="noopener">
-                  {{ t("hero.steamProfile") }} →
+                  {{ t("hero.steamProfile") }}
+                  <svg class="steam-arrow" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+                    <path d="M3.5 2.25 8.25 6 3.5 9.75" />
+                  </svg>
                 </a>
               </div>
             </div>
           </div>
+          <article v-if="live" class="now-panel">
+            <div class="now-shot">
+              <img
+                v-if="live.mapFile && !shotFailed"
+                :src="`/maps/${encodeURIComponent(live.mapFile.toLowerCase())}.jpg`"
+                alt=""
+                @error="shotFailed = true"
+              />
+            </div>
+            <div class="now-body">
+              <span class="now-label">{{ t("hero.playingOn", { server: live.label }) }}</span>
+              <b v-if="live.map">{{ live.map }}</b>
+              <div class="now-meta">
+                <span v-if="live.difficulty > 0"><DifficultyLabel :level="live.difficulty" /></span>
+                <span v-if="liveWave">{{ liveWave }}</span>
+                <span>{{ live.online }} / {{ live.maxPlayers }}</span>
+              </div>
+            </div>
+            <a v-if="live.join && !live.full" class="join-btn" :href="live.join">{{ t("friends.join") }}</a>
+            <span v-else-if="live.full" class="now-full">{{ t("srv.full") }}</span>
+          </article>
         </div>
 
         <div class="profile-divider"></div>
@@ -434,12 +560,48 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   background: linear-gradient(var(--accent-deep), var(--accent), var(--accent-deep));
 }
 
-/* Small skin portrait next to the Steam avatar, matched to its height. */
-.skin-mini { flex: none; width: 64px; }
+/* Skin art is 200×400. Match the identity text height and keep that 1:2 ratio. */
+.skin-mini {
+  position: relative;
+  align-self: stretch;
+  justify-self: start;
+  aspect-ratio: 1 / 2;
+  width: auto;
+  min-width: 64px;
+  min-height: 128px;
+  outline: none;
+  cursor: help;
+}
+.skin-mini::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 6;
+  background: #1d1d25;
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.3;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+}
+.skin-mini:hover::after,
+.skin-mini:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
 .skin-mini-frame {
   position: relative;
-  width: 64px;
-  height: 128px;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   background: linear-gradient(180deg, #1d1d25, #0d0d11);
   border: 1px solid var(--border-bright);
@@ -447,6 +609,8 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
 }
 .skin-mini-frame img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -460,12 +624,16 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   pointer-events: none;
   background: linear-gradient(180deg, transparent 55%, rgba(198, 18, 23, 0.28));
 }
-.skin-mini .skin-plate { margin-top: 7px; text-align: left; font-size: 11px; letter-spacing: 0.08em; }
-.skin-mini .skin-plate b { font-size: 13px; letter-spacing: 0.032em; line-height: 1.25; }
-.skin-mini .skin-plate .skin-hint { max-width: 72px; }
 
 .identity { display: flex; flex-direction: column; gap: 14px; padding: 22px 22px 0; }
-.identity-top { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.identity-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 20px;
+  align-items: stretch;
+  padding-bottom: 22px;
+}
+.identity-top.has-skin { grid-template-columns: auto auto minmax(0, 1fr); }
 
 .profile-divider {
   height: 1px;
@@ -473,6 +641,10 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   background: linear-gradient(90deg, transparent, var(--border) 6%, var(--border) 94%, transparent);
   display: flex;
   align-items: center;
+}
+.profile-divider:has(.profile-label) {
+  margin-top: 18px;
+  margin-bottom: 36px;
 }
 .profile-label {
   position: relative;
@@ -498,38 +670,32 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   box-shadow: 0 0 8px rgba(198, 18, 23, 0.7);
 }
 
-.skin-plate {
-  margin-top: 10px;
-  text-align: center;
-  font-family: var(--font-display);
-  font-size: 15px;
-  letter-spacing: 0.096em;
-  text-transform: uppercase;
-  color: var(--text-dim);
+.avatar-slot {
+  align-self: stretch;
+  justify-self: start;
+  aspect-ratio: 1;
+  width: auto;
+  min-width: 128px;
+  min-height: 128px;
 }
-.skin-plate b { display: block; color: var(--text); font-size: 19px; letter-spacing: 0.064em; }
-.skin-plate .skin-hint {
-  display: block;
-  margin-top: 5px;
-  font-family: var(--font-body);
-  font-size: 11px;
-  letter-spacing: 0.016em;
-  text-transform: none;
-  color: var(--text-faint);
-  line-height: 1.35;
-}
-
 .avatar-frame {
-  width: 128px;
-  height: 128px;
-  flex: none;
+  position: relative;
+  width: 100%;
+  height: 100%;
   background: #0d0d11;
   border: 1px solid var(--border-bright);
   box-shadow: 0 0 18px rgba(198, 18, 23, 0.25);
   clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
   overflow: hidden;
 }
-.avatar-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 .avatar-frame.placeholder {
   display: flex;
   align-items: center;
@@ -555,71 +721,117 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   word-break: break-word;
 }
 
-.badges { display: flex; gap: 7px; flex-wrap: wrap; margin: 8px 0; }
-.badge {
-  font-family: var(--font-display);
-  font-size: 14px;
-  letter-spacing: 0.112em;
-  padding: 3px 9px 2px;
-  border: 1px solid;
-  text-transform: uppercase;
-}
-.badge.admin { color: #ff8a8d; border-color: #7d2023; background: rgba(198, 18, 23, 0.22); }
-.badge.veteran {
-  position: relative;
-  color: var(--gold-bright);
-  border-color: #7d6118;
-  background: rgba(199, 139, 18, 0.14);
-  cursor: help;
-}
-.badge.veteran .badge-tip {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 8px);
-  z-index: 6;
-  width: max-content;
-  max-width: min(280px, 70vw);
-  padding: 8px 10px 7px;
-  font-family: var(--font-body);
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.35;
-  text-transform: none;
-  text-align: left;
-  color: var(--text);
-  background: #1a1a22;
-  border: 1px solid #7d6118;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
-  pointer-events: none;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-4px);
-  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
-}
-.badge.veteran:hover .badge-tip,
-.badge.veteran:focus-visible .badge-tip {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-}
-.badge.banned { color: #c86a6a; border-color: #4a1b1b; background: rgba(120, 30, 30, 0.3); }
-.badge.clan { color: var(--blue); border-color: #174a5c; background: rgba(92, 200, 230, 0.1); }
-.badge.flag { color: var(--text); border-color: var(--border-bright); background: var(--panel); }
-.badge.flag .fi {
-  display: inline-block;
-  margin-right: 6px;
-  vertical-align: -1px;
-  border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
-}
-
 .meta-line { color: var(--text-dim); font-size: 13.5px; }
 .meta-line b { color: var(--text); font-weight: 600; }
 .meta-line .sep { color: var(--text-faint); margin: 0 8px; }
-
-.steam-btn {
+.meta-line .fi {
   display: inline-block;
+  width: 18px;
+  height: 13px;
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+}
+.now-panel {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #7d2023;
+  background: linear-gradient(105deg, rgba(198, 18, 23, 0.28), #141018 42%, #12080a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.now-shot {
+  width: 168px;
+  height: 94px;
+  flex: none;
+  background: #0b0b0e;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.now-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.now-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.now-body b {
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.now-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 13.5px;
+}
+.now-meta > span + span::before {
+  content: "·";
+  margin: 0 8px;
+  color: var(--text-faint);
+}
+.now-meta :deep(.diff) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.now-label {
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+.join-btn {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+  border: 1px solid #7d2023;
+  padding: 7px 16px 5px;
+}
+.join-btn:hover { color: #fff; text-decoration: none; filter: brightness(1.12); }
+.now-full {
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+@media (max-width: 640px) {
+  .now-panel { flex-wrap: wrap; }
+  .now-shot { width: 100%; height: 140px; }
+}
+.steam-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   width: fit-content;
   font-family: var(--font-display);
   font-size: 17px;
@@ -629,6 +841,16 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   background: linear-gradient(180deg, #2b3d4d, #1e2a35);
   border: 1px solid #46637a;
   padding: 7px 16px 5px;
+}
+.steam-arrow {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
 }
 .steam-btn:hover { text-decoration: none; filter: brightness(1.15); }
 
@@ -830,8 +1052,12 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   .score-strip { padding: 0 14px 16px; gap: 8px; }
   .perk-grid { padding: 0 14px 20px; }
   .profile-divider { margin: 0 14px 16px; }
+  .profile-divider:has(.profile-label) { margin: 14px 14px 28px; }
 }
 @media (max-width: 560px) {
-  .identity-top { flex-direction: column; }
+  .identity-top,
+  .identity-top.has-skin { grid-template-columns: auto; justify-items: start; }
+  .avatar-slot { width: 128px; height: 128px; }
+  .skin-mini { width: 64px; height: 128px; }
 }
 </style>

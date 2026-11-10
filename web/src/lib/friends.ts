@@ -18,6 +18,7 @@ export interface Friend {
   perk: string;
   join: string;
   full: boolean;
+  difficulty: number;
 }
 
 export type FriendsStatus =
@@ -135,6 +136,7 @@ function asFriend(raw: Partial<Friend>): Friend {
     perk: String(raw.perk || ""),
     join: String(raw.join || ""),
     full: Boolean(raw.full),
+    difficulty: Number(raw.difficulty) || 0,
   };
 }
 

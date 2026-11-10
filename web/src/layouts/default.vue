@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { LANG_LABEL, LOCALES, i18n, setLocale, t, type Locale } from "~/i18n";
 import { SESSIONS_PUBLIC } from "~/lib/flags";
-import { prettyMap } from "~/lib/format";
+import { prettyMap, noticePlace } from "~/lib/format";
 import {
   friendNotify,
   playingFriends,
@@ -36,6 +36,9 @@ interface FriendToastItem {
   server: string;
   map: string;
   profile: string;
+  join: string;
+  full: boolean;
+  difficulty: number;
 }
 const toasts = ref<FriendToastItem[]>([]);
 let toastSeq = 0;
@@ -126,6 +129,9 @@ function pushFriendToast(friend: Friend): void {
       server: friend.server,
       map: friend.map ? prettyMap(friend.map) : "",
       profile: friend.profile,
+      join: friend.join,
+      full: friend.full,
+      difficulty: friend.difficulty,
     },
   ].slice(-4);
   window.setTimeout(() => {
@@ -140,8 +146,9 @@ function showFriendAlert(friend: Friend): void {
   // for as long as the site is open.
   if (pushReady.value) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  const title = t("friends.joined", { name: friend.name, server: friend.server });
-  const body = friend.map ? prettyMap(friend.map) : "";
+  const place = noticePlace(friend.map ? prettyMap(friend.map) : "", friend.difficulty, friend.server);
+  const title = friend.name;
+  const body = t("friends.noticeBody", { place });
   try {
     const note = new Notification(title, {
       body,
@@ -336,6 +343,9 @@ async function onSearch(): Promise<void> {
       :server="toast.server"
       :map="toast.map"
       :profile="toast.profile"
+      :join="toast.join"
+      :full="toast.full"
+      :difficulty="toast.difficulty"
     />
   </div>
 

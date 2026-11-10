@@ -30,9 +30,14 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = new URL(event.notification.data?.url || "/friends", self.location.origin).href;
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (windows) => {
       for (const client of windows) {
         if (client.url === url && "focus" in client) return client.focus();
+      }
+      const open = windows.find((client) => "focus" in client);
+      if (open && "navigate" in open) {
+        await open.focus();
+        return open.navigate(url);
       }
       if (self.clients.openWindow) return self.clients.openWindow(url);
       return undefined;

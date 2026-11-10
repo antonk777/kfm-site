@@ -8,7 +8,12 @@ import PerkIcon from "~/components/PerkIcon.vue";
 import SessionCharts from "~/components/SessionCharts.vue";
 import { setPageTitle } from "~/title";
 
-const props = defineProps<{ id: string }>();
+const route = useRoute();
+
+const sessionId = computed(() => {
+  const raw = route.params.id;
+  return (Array.isArray(raw) ? raw[0] : raw) || "";
+});
 
 const data = ref<SessionDetailInfo | null>(null);
 const loading = ref(true);
@@ -30,7 +35,7 @@ async function load(): Promise<void> {
   loading.value = !data.value;
   failed.value = false;
   try {
-    data.value = await fetchSession(props.id);
+    data.value = await fetchSession(sessionId.value);
   } catch {
     if (!data.value) failed.value = true;
   } finally {
@@ -38,7 +43,7 @@ async function load(): Promise<void> {
   }
 }
 
-watch(() => props.id, () => {
+watch(sessionId, () => {
   data.value = null;
   avatarFailed.value = {};
   void load();
@@ -63,7 +68,7 @@ function onVisible(): void {
 
 onMounted(() => {
   void load();
-  if (props.id !== "demo") {
+  if (sessionId.value !== "demo") {
     timer = setInterval(() => void load(), 60000);
     document.addEventListener("visibilitychange", onVisible);
   }
@@ -371,7 +376,7 @@ const squadBadges = computed(() => {
 // so the same rules would name survivors before anyone knows the result.
 // The demo fixture carries the full counter set. Live rows do only once this version is recording them.
 const showStatuses = computed(() => {
-  if (props.id === "demo") return true;
+  if (sessionId.value === "demo") return true;
   const s = data.value;
   if (!s || s.outcome === "playing" || s.endedAt <= 0) return false;
   return s.startedAt >= SESSION_STATUS_SINCE;

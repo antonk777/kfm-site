@@ -1,4 +1,5 @@
 // Shared formatting helpers (browser-safe, no Node imports).
+import { t } from "../i18n";
 
 // Thousands separated by spaces ("10 000 000"). Non-breaking spaces keep a
 // number from wrapping at the separator inside narrow cells.
@@ -71,4 +72,30 @@ export function difficultyBucket(n: number): number {
   if (n >= 2) return 2;
   if (n > 0) return 1;
   return 0;
+}
+
+const DIFF_KEY: Record<string, string> = {
+  Underworld: "diff.underworld",
+  Brutal: "diff.brutal",
+  "Hell on Earth": "diff.hoe",
+  Suicidal: "diff.suicidal",
+  Hard: "diff.hard",
+  Normal: "diff.normal",
+  Beginner: "diff.beginner",
+};
+
+export function difficultyText(level: number, at?: number): string {
+  const name = difficultyName(level, at);
+  const key = DIFF_KEY[name] || "";
+  if (!key) return "";
+  const text = t(key);
+  return text === key ? name : text;
+}
+
+/** Map and difficulty as one phrase, for a live seat and for notifications. */
+export function noticePlace(map: string, difficulty = 0, server = ""): string {
+  const where = map || server;
+  const diff = difficultyText(difficulty);
+  if (where && diff) return `${where}, ${diff}`;
+  return where || diff;
 }

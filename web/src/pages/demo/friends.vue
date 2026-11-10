@@ -4,7 +4,7 @@ import AccountMenu from "~/components/AccountMenu.vue";
 import FriendToast from "~/components/FriendToast.vue";
 import FriendsStrip from "~/components/FriendsStrip.vue";
 import { t } from "~/i18n";
-import { prettyMap } from "~/lib/format";
+import { prettyMap, noticePlace } from "~/lib/format";
 import {
   beginFriendDemo,
   emitFriendAlert,
@@ -29,6 +29,7 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "Commando",
     join: "steam://run/1250//85.192.30.108:7707",
     full: false,
+    difficulty: 2,
   },
   {
     steamId: "76561198000000003",
@@ -43,6 +44,7 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "",
     join: "",
     full: false,
+    difficulty: 0,
   },
   {
     steamId: "76561198000000005",
@@ -57,6 +59,7 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "",
     join: "",
     full: false,
+    difficulty: 0,
   },
   {
     steamId: "76561198000000006",
@@ -71,6 +74,7 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "",
     join: "",
     full: false,
+    difficulty: 0,
   },
   {
     steamId: "76561198000000007",
@@ -85,6 +89,7 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "Berserker",
     join: "steam://run/1250//85.192.30.108:7708",
     full: true,
+    difficulty: 5,
   },
   {
     steamId: "76561198000000004",
@@ -99,16 +104,83 @@ const DEMO_FRIENDS: Friend[] = [
     perk: "",
     join: "",
     full: false,
+    difficulty: 0,
   },
 ];
 
 const playing = DEMO_FRIENDS[0];
 const menuOpen = ref(true);
 const denied = ref(typeof Notification !== "undefined" && Notification.permission === "denied");
+const osStatus = ref<"" | "ask" | "sent" | "denied" | "unsupported">("");
 const restore = beginFriendDemo(DEMO_FRIENDS);
 
 function showNotice(): void {
   emitFriendAlert(playing);
+}
+
+function showOsNotice(): void {
+  osStatus.value = "";
+  if (typeof window === "undefined" || typeof Notification === "undefined") {
+    osStatus.value = "unsupported";
+    return;
+  }
+  const finish = (perm: NotificationPermission) => {
+    denied.value = perm === "denied";
+    if (perm !== "granted") {
+      osStatus.value = "denied";
+      return;
+    }
+    void deliverOsNotice();
+  };
+  // Called in the click itself. An async handler can lose the gesture, and
+  // then the browser neither prompts nor shows anything.
+  if (Notification.permission === "default") {
+    osStatus.value = "ask";
+    void Notification.requestPermission().then(finish, () => finish("denied"));
+    return;
+  }
+  finish(Notification.permission);
+}
+
+async function deliverOsNotice(): Promise<void> {
+  const where = noticePlace(playing.map ? prettyMap(playing.map) : "", playing.difficulty, playing.server);
+  const title = playing.name;
+  const body = t("friends.noticeBody", { place: where });
+  const profileUrl = `/players/${playing.profile}`;
+  const options: NotificationOptions = {
+    body,
+    tag: "kfm-friend-test",
+    renotify: true,
+    data: { url: profileUrl },
+  };
+  const openProfile = () => {
+    window.focus();
+    void navigateTo(profileUrl);
+  };
+  try {
+    // A page Notification is hidden while this tab is focused. The worker
+    // shows it on the device anyway. A click opens the player's stats page.
+    if ("serviceWorker" in navigator) {
+      await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, options);
+      osStatus.value = "sent";
+      return;
+    }
+  } catch {
+    // Fall through to the page notification.
+  }
+  try {
+    const note = new Notification(title, options);
+    note.onclick = () => {
+      openProfile();
+      note.close();
+    };
+    osStatus.value = "sent";
+  } catch {
+    osStatus.value = "denied";
+    denied.value = true;
+  }
 }
 
 async function onToggleNotify(): Promise<void> {
@@ -169,8 +241,18 @@ onBeforeUnmount(() => {
       :server="playing.server"
       :map="prettyMap(playing.map)"
       :profile="playing.profile"
+      :join="playing.join"
+      :full="playing.full"
+      :difficulty="playing.difficulty"
     />
-    <button class="again" type="button" @click="showNotice">{{ t("demo.showNotice") }}</button>
+    <div class="notice-actions">
+      <button class="again" type="button" @click="showNotice">{{ t("demo.showNotice") }}</button>
+      <button class="again" type="button" @click="showOsNotice">{{ t("demo.testOs") }}</button>
+    </div>
+    <p v-if="osStatus === 'ask'" class="empty-note">{{ t("demo.osAsk") }}</p>
+    <p v-else-if="osStatus === 'sent'" class="empty-note">{{ t("demo.osSent") }}</p>
+    <p v-else-if="osStatus === 'denied'" class="empty-note">{{ t("friends.allow") }}</p>
+    <p v-else-if="osStatus === 'unsupported'" class="empty-note">{{ t("demo.osUnsupported") }}</p>
   </div>
 </template>
 
@@ -207,9 +289,14 @@ onBeforeUnmount(() => {
   font-weight: 500;
   color: #fff;
 }
+.notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
 .again {
   appearance: none;
-  margin-top: 12px;
   height: 32px;
   padding: 0 12px;
   border: 1px solid var(--border-bright);
