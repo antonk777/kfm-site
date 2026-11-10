@@ -146,6 +146,11 @@ if ! python3 -c "import PIL.Image" >/dev/null 2>&1; then
   apt-get update -y
   apt-get install -y --no-install-recommends python3-pil
 fi
+if ! python3 -c "import cryptography" >/dev/null 2>&1; then
+  echo "==> install python3-cryptography (friend join notifications)"
+  apt-get update -y
+  apt-get install -y --no-install-recommends python3-cryptography
+fi
 
 echo "==> stats API (secret /statistics/)"
 install -m 644 "${SCRIPT_DIR}/systemd/kfm-stats.service" /etc/systemd/system/kfm-stats.service
@@ -161,11 +166,20 @@ else
   systemctl enable --now caddy
 fi
 
+if [ -f "${SCRIPT_DIR}/umami/website-id.sh" ]; then
+  echo "==> umami website id"
+  bash "${SCRIPT_DIR}/umami/website-id.sh" apply
+fi
+if [ -f "${SCRIPT_DIR}/umami/up.sh" ]; then
+  if ! bash "${SCRIPT_DIR}/umami/up.sh"; then
+    echo "WARN: Umami did not start" >&2
+  fi
+fi
+
 echo "==> done"
 echo "    site:  https://${SITE_DOMAIN}/"
 echo "    ip:    http://${SITE_IP}/"
 echo "    file:  ${SITE_ROOT}/release.json"
 echo "    dl:    https://${SITE_DOMAIN}/download"
 echo "    logs:  ${SITE_LOG}"
-echo "    stats: SITE_LOG=${SITE_LOG} node ${SCRIPT_DIR}/download-stats.mjs"
 echo "    charts: https://${SITE_DOMAIN}/statistics/ (unlisted)"

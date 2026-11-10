@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { fetchPlayer, resolveVanity, type PlayerPayload, type SessionInfo } from "../api";
+import { fetchPlayer, resolveVanity, type PlayerPayload, type SessionInfo } from "~/api";
 import {
   fmtDate,
   fmtDateOnly,
   fmtNum,
-} from "../lib/format";
-import { t, i18n } from "../i18n";
-import { countryName } from "../data/countries";
-import DifficultyLabel from "../components/DifficultyLabel.vue";
-import PerkCard from "../components/PerkCard.vue";
-import { achIconSrc } from "../lib/achIcons";
-import { SESSIONS_PUBLIC } from "../lib/flags";
+} from "~/lib/format";
+import { t, i18n } from "~/i18n";
+import { countryName } from "~/data/countries";
+import DifficultyLabel from "~/components/DifficultyLabel.vue";
+import PerkCard from "~/components/PerkCard.vue";
+import { achIconSrc } from "~/lib/achIcons";
+import { SESSIONS_PUBLIC } from "~/lib/flags";
+import { steamUser } from "~/lib/steam";
+import { setPageTitle } from "~/title";
+import FriendsStrip from "~/components/FriendsStrip.vue";
 
 const props = defineProps<{ id: string }>();
 
@@ -49,6 +52,23 @@ async function load() {
 }
 
 watch(() => props.id, load, { immediate: true });
+
+const isMine = computed(() => {
+  const mine = steamUser.value?.steamId || "";
+  const theirs = data.value?.steamId || "";
+  return mine.length > 0 && mine === theirs;
+});
+
+watch(
+  () => {
+    if (loading.value) return null;
+    if (failed.value) return { key: "error" };
+    if (!data.value?.found) return { key: "notFound" };
+    return data.value.name || null;
+  },
+  (name) => setPageTitle(name),
+  { immediate: true },
+);
 
 const skinUrl = computed(() => {
   const d = data.value;
@@ -266,6 +286,8 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
           <PerkCard v-for="p in data.perks" :key="p.index" :perk="p" />
         </div>
       </section>
+
+      <FriendsStrip v-if="isMine" />
 
       <!-- clears -->
       <h2 class="section-title">
@@ -515,9 +537,9 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   background: radial-gradient(circle at 50% 40%, #1c1c24, #0c0c10);
 }
 .avatar-frame .avatar-placeholder {
-  width: auto;
-  height: 78%;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
   opacity: 0.82;
   filter: drop-shadow(0 0 8px rgba(198, 18, 23, 0.45));
 }

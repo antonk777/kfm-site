@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { fetchRecentSessions, SESSION_HISTORY_LIMIT, type RecentSessionInfo } from "../api";
-import { t } from "../i18n";
-import SessionTable from "../components/SessionTable.vue";
+import { fetchRecentSessions, SESSION_HISTORY_LIMIT, type RecentSessionInfo } from "~/api";
+import { t } from "~/i18n";
+import SessionTable from "~/components/SessionTable.vue";
 
 const PAGE_SIZE = 20;
 

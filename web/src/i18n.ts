@@ -1,10 +1,27 @@
 // Tiny i18n: en is complete, other locales fill in what they have and fall
-// back to en. Locale list mirrors the live site (en/ru/zh/es/pt) and is
-// persisted under the same localStorage key.
+// back to en. A saved choice in localStorage wins. The first visit, with
+// nothing saved, follows the browser's language list (the same list sent as
+// Accept-Language).
 import { reactive } from "vue";
+import { de, fr, it, ja, pl, sv } from "./locales";
 
-export const LOCALES = ["en", "ru", "zh", "es", "pt"] as const;
+export const LOCALES = ["en", "ru", "zh", "ja", "es", "pt", "it", "de", "fr", "pl", "sv"] as const;
 export type Locale = (typeof LOCALES)[number];
+
+// Endonyms in the header menu. Each name is the language's own.
+export const LANG_LABEL: Record<Locale, string> = {
+  en: "English",
+  ru: "Русский",
+  zh: "中文",
+  ja: "日本語",
+  es: "Español",
+  pt: "Português",
+  it: "Italiano",
+  de: "Deutsch",
+  fr: "Français",
+  pl: "Polski",
+  sv: "Svenska",
+};
 
 type Dict = Record<string, string>;
 
@@ -14,9 +31,38 @@ const en: Dict = {
   "nav.landing": "Home",
   "nav.sessions": "Sessions",
   "nav.home": "Players",
+  "nav.changelog": "Change Log",
   "nav.login": "Log in",
   "nav.profile": "My profile",
+  "nav.friends": "Friends",
+  "nav.friendNotify": "Notify when a friend joins a server",
   "nav.logout": "Log out",
+  "friends.title": "Friends",
+  "friends.playing": "On a server",
+  "friends.away": "Not on a server",
+  "friends.empty": "Steam did not return any friends.",
+  "friends.nonePlayed": "None of your friends have played on KF-Maniacs.",
+  "demo.title": "Friends preview",
+  "demo.hint": "Sample players. Friends who have never played on KF-Maniacs stay off the profile list.",
+  "demo.menu": "Account menu",
+  "demo.profile": "Profile",
+  "demo.notice": "Notification",
+  "demo.showNotice": "Show the notice",
+  "demo.you": "You",
+  "friends.private": "Steam is hiding your friends list. Set the friends list to Public in your Steam privacy settings, then reload this page.",
+  "friends.privacy": "Steam privacy settings",
+  "friends.login": "Log in with Steam to see your friends and when they are on a KF-Maniacs server.",
+  "friends.unavailable": "The friends list is unavailable right now.",
+  "friends.noconfig": "Steam friends are not available on this server.",
+  "friends.playingOn": "On {server}",
+  "friends.nonePlaying": "No friends on a KF-Maniacs server right now.",
+  "friends.seeAll": "All friends",
+  "friends.joined": "{name} is on {server}",
+  "friends.allow": "Browser alerts are blocked. You will still see them on this site while it is open.",
+  "friends.filter": "Filter friends",
+  "friends.join": "Join",
+  "friends.refresh": "Refresh",
+  "friends.noMatch": "No friends match that name.",
   "stats.section": "Statistics",
   "stats.loginHint": "Log in with Steam to see your perks, sessions, and map clears.",
   "stats.openHint": "Your perks, sessions, and map clears are on your profile.",
@@ -213,6 +259,9 @@ const en: Dict = {
   "landing.warn": "Google and Windows Defender may warn about KFM Companion. This is a false positive. The program is open source and legitimate. It is based on Steam Achievement Manager and does nothing harmful.",
   "landing.source": "Source code",
   "landing.changelog": "What's new",
+  "changelog.title": "Change Log",
+  "changelog.all": "Full change log",
+  "changelog.empty": "Notes show up here after the server is updated.",
   "srv.servers": "Our servers",
   "srv.discord": "Our Discord",
   "srv.discordJoin": "Join Discord",
@@ -220,6 +269,7 @@ const en: Dict = {
   "srv.discordMembers": "Members",
   "srv.discordUnavailable": "Discord monitor is unavailable right now.",
   "srv.join": "Join via Steam",
+  "srv.full": "Server full",
   "srv.session": "Session",
   "srv.players": "Players",
   "srv.wave": "Wave",
@@ -249,9 +299,38 @@ const ru: Dict = {
   "nav.landing": "Главная",
   "nav.sessions": "Сессии",
   "nav.home": "Игроки",
+  "nav.changelog": "Изменения",
   "nav.login": "Войти",
   "nav.profile": "Мой профиль",
+  "nav.friends": "Друзья",
+  "nav.friendNotify": "Сообщать, когда друг заходит на сервер",
   "nav.logout": "Выйти",
+  "friends.title": "Друзья",
+  "friends.playing": "На сервере",
+  "friends.away": "Не на сервере",
+  "friends.empty": "Steam не вернул ни одного друга.",
+  "friends.nonePlayed": "Никто из друзей ещё не играл на KF-Maniacs.",
+  "demo.title": "Превью друзей",
+  "demo.hint": "Пример. Друзья, которые не играли на KF-Maniacs, не попадают в список на профиле.",
+  "demo.menu": "Меню аккаунта",
+  "demo.profile": "Профиль",
+  "demo.notice": "Уведомление",
+  "demo.showNotice": "Показать уведомление",
+  "demo.you": "Вы",
+  "friends.private": "Steam скрывает список друзей. Откройте список друзей в настройках приватности Steam и обновите страницу.",
+  "friends.privacy": "Настройки приватности Steam",
+  "friends.login": "Войдите через Steam, чтобы видеть друзей и когда они на сервере KF-Maniacs.",
+  "friends.unavailable": "Список друзей сейчас недоступен.",
+  "friends.noconfig": "Друзья Steam на этом сервере недоступны.",
+  "friends.playingOn": "На сервере {server}",
+  "friends.nonePlaying": "Сейчас никого из друзей нет на серверах KF-Maniacs.",
+  "friends.seeAll": "Все друзья",
+  "friends.joined": "{name} на сервере {server}",
+  "friends.allow": "Браузер запретил уведомления. Пока сайт открыт, они всё равно появятся здесь.",
+  "friends.filter": "Найти друга",
+  "friends.join": "Зайти",
+  "friends.refresh": "Обновить",
+  "friends.noMatch": "Нет друзей с таким именем.",
   "stats.section": "Статистика",
   "stats.loginHint": "Войдите через Steam, чтобы увидеть перки, сессии и пройденные карты.",
   "stats.openHint": "Перки, сессии и пройденные карты — в вашем профиле.",
@@ -438,6 +517,9 @@ const ru: Dict = {
   "landing.warn": "Google и Windows Defender могут предупреждать о KFM Companion. Это ложное срабатывание. Программа с открытым исходным кодом и полностью легитимна. Она основана на Steam Achievement Manager, в ней нет ничего вредоносного.",
   "landing.source": "Исходный код",
   "landing.changelog": "Что нового",
+  "changelog.title": "Журнал изменений",
+  "changelog.all": "Весь журнал",
+  "changelog.empty": "Записи появляются здесь после обновления сервера.",
   "srv.servers": "Наши серверы",
   "srv.discord": "Наш Discord",
   "srv.discordJoin": "Зайти в Discord",
@@ -445,6 +527,7 @@ const ru: Dict = {
   "srv.discordMembers": "Участники",
   "srv.discordUnavailable": "Мониторинг Discord сейчас недоступен.",
   "srv.join": "Зайти через Steam",
+  "srv.full": "Сервер полон",
   "srv.session": "Сессия",
   "srv.players": "Игроки",
   "srv.wave": "Волна",
@@ -474,7 +557,39 @@ const ru: Dict = {
 const zh: Dict = {
   "nav.login": "登录",
   "nav.profile": "我的资料",
+  "nav.friends": "好友",
+  "nav.friendNotify": "好友加入服务器时通知我",
   "nav.logout": "退出",
+  "friends.title": "好友",
+  "friends.playing": "在服务器上",
+  "friends.away": "不在服务器上",
+  "friends.empty": "Steam 没有返回任何好友。",
+  "friends.nonePlayed": "还没有好友在 KF-Maniacs 上玩过。",
+  "demo.title": "好友预览",
+  "demo.hint": "示例玩家。没在 KF-Maniacs 玩过的好友不会出现在资料页列表里。",
+  "demo.menu": "账号菜单",
+  "demo.profile": "资料",
+  "demo.notice": "通知",
+  "demo.showNotice": "显示通知",
+  "demo.you": "你",
+  "friends.private": "Steam 隐藏了你的好友列表。请在 Steam 隐私设置里将好友列表设为公开，然后刷新此页。",
+  "friends.privacy": "Steam 隐私设置",
+  "friends.login": "使用 Steam 登录，查看好友以及他们是否在 KF-Maniacs 服务器上。",
+  "friends.unavailable": "好友列表暂时无法加载。",
+  "friends.noconfig": "此服务器未启用 Steam 好友。",
+  "friends.playingOn": "在 {server}",
+  "friends.nonePlaying": "目前没有好友在 KF-Maniacs 服务器上。",
+  "friends.seeAll": "全部好友",
+  "friends.joined": "{name} 在 {server}",
+  "friends.allow": "浏览器已禁止通知。网站打开时，提醒仍会显示在页面上。",
+  "friends.filter": "筛选好友",
+  "friends.join": "加入",
+  "friends.refresh": "刷新",
+  "friends.noMatch": "没有匹配的好友。",
+  "nav.changelog": "更新日志",
+  "changelog.title": "更新日志",
+  "changelog.all": "完整日志",
+  "changelog.empty": "服务器更新后，更新说明会显示在这里。",
   "stats.section": "统计",
   "stats.loginHint": "使用 Steam 登录，查看你的职业、对局和通关记录。",
   "stats.openHint": "你的职业、对局和通关记录在个人资料里。",
@@ -496,6 +611,7 @@ const zh: Dict = {
   "srv.discordMembers": "成员",
   "srv.discordUnavailable": "Discord 监控暂时不可用。",
   "srv.join": "通过 Steam 加入",
+  "srv.full": "服务器已满",
   "srv.session": "对局",
   "srv.players": "玩家",
   "srv.wave": "波次",
@@ -601,7 +717,39 @@ const zh: Dict = {
 const es: Dict = {
   "nav.login": "Entrar",
   "nav.profile": "Mi perfil",
+  "nav.friends": "Amigos",
+  "nav.friendNotify": "Avisarme cuando un amigo entre en un servidor",
   "nav.logout": "Salir",
+  "friends.title": "Amigos",
+  "friends.playing": "En un servidor",
+  "friends.away": "Fuera de los servidores",
+  "friends.empty": "Steam no devolvió ningún amigo.",
+  "friends.nonePlayed": "Ninguno de tus amigos ha jugado en KF-Maniacs.",
+  "demo.title": "Vista previa de amigos",
+  "demo.hint": "Jugadores de ejemplo. Quienes nunca jugaron en KF-Maniacs no salen en la lista del perfil.",
+  "demo.menu": "Menú de la cuenta",
+  "demo.profile": "Perfil",
+  "demo.notice": "Aviso",
+  "demo.showNotice": "Mostrar el aviso",
+  "demo.you": "Tú",
+  "friends.private": "Steam oculta tu lista de amigos. Pon la lista de amigos en Pública en los ajustes de privacidad de Steam y recarga esta página.",
+  "friends.privacy": "Privacidad de Steam",
+  "friends.login": "Entra con Steam para ver a tus amigos y cuándo están en un servidor de KF-Maniacs.",
+  "friends.unavailable": "La lista de amigos no está disponible ahora.",
+  "friends.noconfig": "Los amigos de Steam no están disponibles en este servidor.",
+  "friends.playingOn": "En {server}",
+  "friends.nonePlaying": "Ahora mismo no hay amigos en un servidor de KF-Maniacs.",
+  "friends.seeAll": "Todos los amigos",
+  "friends.joined": "{name} está en {server}",
+  "friends.allow": "El navegador bloqueó las alertas. Mientras el sitio esté abierto, seguirán saliendo aquí.",
+  "friends.filter": "Filtrar amigos",
+  "friends.join": "Entrar",
+  "friends.refresh": "Actualizar",
+  "friends.noMatch": "Ningún amigo coincide con ese nombre.",
+  "nav.changelog": "Cambios",
+  "changelog.title": "Registro de cambios",
+  "changelog.all": "Registro completo",
+  "changelog.empty": "Las notas aparecen aquí después de actualizar el servidor.",
   "stats.section": "Estadísticas",
   "stats.loginHint": "Entra con Steam para ver tus perks, partidas y mapas completados.",
   "stats.openHint": "Tus perks, partidas y mapas completados están en tu perfil.",
@@ -623,6 +771,7 @@ const es: Dict = {
   "srv.discordMembers": "Miembros",
   "srv.discordUnavailable": "El monitor de Discord no está disponible ahora.",
   "srv.join": "Entrar por Steam",
+  "srv.full": "Servidor lleno",
   "srv.session": "Partida",
   "srv.players": "Jugadores",
   "srv.wave": "Oleada",
@@ -728,7 +877,39 @@ const es: Dict = {
 const pt: Dict = {
   "nav.login": "Entrar",
   "nav.profile": "Meu perfil",
+  "nav.friends": "Amigos",
+  "nav.friendNotify": "Avisar quando um amigo entrar em um servidor",
   "nav.logout": "Sair",
+  "friends.title": "Amigos",
+  "friends.playing": "Em um servidor",
+  "friends.away": "Fora dos servidores",
+  "friends.empty": "A Steam não devolveu nenhum amigo.",
+  "friends.nonePlayed": "Nenhum dos seus amigos jogou na KF-Maniacs.",
+  "demo.title": "Prévia dos amigos",
+  "demo.hint": "Jogadores de exemplo. Quem nunca jogou na KF-Maniacs fica de fora da lista do perfil.",
+  "demo.menu": "Menu da conta",
+  "demo.profile": "Perfil",
+  "demo.notice": "Aviso",
+  "demo.showNotice": "Mostrar o aviso",
+  "demo.you": "Você",
+  "friends.private": "A Steam está ocultando sua lista de amigos. Deixe a lista de amigos como Pública nas configurações de privacidade da Steam e recarregue esta página.",
+  "friends.privacy": "Privacidade da Steam",
+  "friends.login": "Entre com a Steam para ver seus amigos e quando eles estão em um servidor da KF-Maniacs.",
+  "friends.unavailable": "A lista de amigos está indisponível no momento.",
+  "friends.noconfig": "Os amigos da Steam não estão disponíveis neste servidor.",
+  "friends.playingOn": "Em {server}",
+  "friends.nonePlaying": "Nenhum amigo está em um servidor da KF-Maniacs agora.",
+  "friends.seeAll": "Todos os amigos",
+  "friends.joined": "{name} está em {server}",
+  "friends.allow": "O navegador bloqueou os alertas. Enquanto o site estiver aberto, eles ainda aparecem aqui.",
+  "friends.filter": "Filtrar amigos",
+  "friends.join": "Entrar",
+  "friends.refresh": "Atualizar",
+  "friends.noMatch": "Nenhum amigo corresponde a esse nome.",
+  "nav.changelog": "Mudanças",
+  "changelog.title": "Registro de mudanças",
+  "changelog.all": "Registro completo",
+  "changelog.empty": "As notas aparecem aqui depois que o servidor é atualizado.",
   "stats.section": "Estatísticas",
   "stats.loginHint": "Entre com o Steam para ver seus perks, partidas e mapas concluídos.",
   "stats.openHint": "Seus perks, partidas e mapas concluídos estão no seu perfil.",
@@ -750,6 +931,7 @@ const pt: Dict = {
   "srv.discordMembers": "Membros",
   "srv.discordUnavailable": "O monitor do Discord está indisponível no momento.",
   "srv.join": "Entrar pelo Steam",
+  "srv.full": "Servidor cheio",
   "srv.session": "Partida",
   "srv.players": "Jogadores",
   "srv.wave": "Onda",
@@ -853,19 +1035,64 @@ const pt: Dict = {
   "outcome.playing": "Em andamento",
 };
 
-export const MESSAGES: Record<Locale, Dict> = { en, ru, zh, es, pt };
+export const MESSAGES: Record<Locale, Dict> = { en, ru, zh, ja, es, pt, it, de, fr, pl, sv };
 
 const STORAGE_KEY = "kfm-lang";
 
-export const i18n = reactive({
-  locale: (localStorage.getItem(STORAGE_KEY) as Locale | null) ?? "en",
-});
+function isLocale(value: string): value is Locale {
+  return (LOCALES as readonly string[]).includes(value);
+}
 
-if (!LOCALES.includes(i18n.locale)) i18n.locale = "en";
+// "de-DE" and "pt-BR" match de and pt. An unknown tag is skipped.
+function localeFromTag(tag: string): Locale | null {
+  const base = tag.trim().toLowerCase().replace(/_/g, "-").split("-")[0];
+  return base && isLocale(base) ? base : null;
+}
+
+function localeFromBrowser(): Locale {
+  if (typeof navigator === "undefined") return "en";
+  const list = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const tag of list) {
+    if (!tag) continue;
+    const hit = localeFromTag(tag);
+    if (hit) return hit;
+  }
+  return "en";
+}
+
+export function localeFromAcceptLanguage(header: string | undefined): Locale {
+  if (!header) return "en";
+  for (const part of header.split(",")) {
+    const tag = part.trim().split(";")[0];
+    const hit = localeFromTag(tag || "");
+    if (hit) return hit;
+  }
+  return "en";
+}
+
+function initialLocale(): Locale {
+  if (import.meta.server) return "en";
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && isLocale(stored)) return stored;
+  } catch {
+    // Private mode: fall through to the browser language.
+  }
+  return localeFromBrowser();
+}
+
+export const i18n = reactive({
+  locale: initialLocale() as Locale,
+});
 
 export function setLocale(locale: Locale): void {
   i18n.locale = locale;
-  localStorage.setItem(STORAGE_KEY, locale);
+  if (import.meta.server) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    // Choice still applies for this tab.
+  }
   document.documentElement.lang = locale === "zh" ? "zh-Hans" : locale;
 }
 
@@ -876,5 +1103,3 @@ export function t(key: string, params?: Record<string, string | number>): string
   }
   return s;
 }
-
-setLocale(i18n.locale);

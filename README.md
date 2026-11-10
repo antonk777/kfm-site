@@ -113,14 +113,45 @@ route answers 503. Persona name and custom URL reuse the existing Web API
 lookup, so a missing key still logs the player in and sends them to
 `/players/<SteamID64>`.
 
-## Download counts
+## Visits (Umami)
 
-Shown on the secret `/statistics/` dashboard (from Caddy JSON access logs).
-CLI still works:
+Page views stay on this machine. Umami and its Postgres run in Docker and listen
+on `127.0.0.1:9477` only. Caddy proxies two public paths to it, `/kf.js` and
+`/api/kf`. The dashboard is not on the public site.
+
+`deploy.sh` and `deploy-site.py` start it (`umami/up.sh`). The first run writes
+`/etc/kfm-umami.env` (mode 600) with the database password. Keep that file: a
+later change to `POSTGRES_PASSWORD` does not update the existing volume.
+
+Open the dashboard through an SSH tunnel:
 
 ```bash
-sudo SITE_LOG=/var/log/caddy/kfm.manul.lol.log node /opt/kfm-site/download-stats.mjs
+ssh -L 9477:127.0.0.1:9477 root@85.192.30.108
 ```
+
+Then http://127.0.0.1:9477. The first login is **admin** / **umami**. Change
+that password, add a website for `kf-maniacs.com`, and put the website UUID in
+`/etc/kfm-site.env`:
+
+```bash
+UMAMI_WEBSITE_ID=<uuid from the dashboard>
+```
+
+The next site deploy writes it to `SITE_ROOT/umami-website-id`. The Vue app
+loads the tracker only when that file is a UUID, and only on `kf-maniacs.com`
+and `kfm.manul.lol`. Client-side moves (`/players/…`, `/sessions/…`) are
+recorded by the tracker. Paths are stored, including `/players/<steam id>`.
+Query strings are not. An empty `UMAMI_WEBSITE_ID` removes the file and the
+tracker stays off.
+
+Umami is started with telemetry, the update check, and its favicon lookups
+turned off (`PRIVATE_MODE`, `DISABLE_TELEMETRY`, `DISABLE_UPDATES`).
+
+## Download counts
+
+`/download` and `KFM-Companion*.exe` are served by `stats-server.py`. Each GET
+that starts the file inserts a row in `site_companion_downloads`. The
+`/statistics/` dashboard reads that table.
 
 ## Secret `/statistics/` dashboard
 

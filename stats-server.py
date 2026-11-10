@@ -15,7 +15,7 @@ Caddy reverse-proxies /statistics* and /api/stats*. Game sends UDP form bodies
 Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
   KFM_MYSQL_*   same as perkhost
   STATS_HOST / STATS_PORT / STATS_DAYS
-  SITE_LOG      Caddy JSON access log (Companion download counts)
+  SITE_ROOT     directory Caddy serves; companion downloads are read from here
   DISCORD_INVITE  invite code behind the landing-page Discord card
                   (default MJXsav9DFC; empty turns the card's data off)
   SITE_PUBLIC_URL public origin for Steam OpenID (default https://kf-maniacs.com)
@@ -24,6 +24,7 @@ Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -31,7 +32,9 @@ import json
 import os
 import re
 import secrets
+import shlex
 import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -50,10 +53,13 @@ PORT = int(os.environ.get("STATS_PORT", "8765"))
 DAYS = max(30, int(os.environ.get("STATS_DAYS", "180")))
 HTML_PATH = Path(__file__).with_name("statistics.html")
 LOCK = threading.RLock()
-DOWNLOAD_PATH_RE = re.compile(r"^/(download|KFM-Companion[^/]*\.exe)$", re.I)
-# Slots that still accept stats. Hard and Suicidal stay here so
-# «Все» keeps their history, but they are not shown or restarted from the panel.
-KNOWN_SERVERS = ("meatgrinder", "hard", "suicidal", "bloodbath")
+# Public companion URLs. /download is the stable name; the versioned exe is
+# what the landing page links to.
+COMPANION_FILE_RE = re.compile(r"^KFM-Companion[^/]*\.exe$", re.I)
+# Slots that still accept stats. Hard stays here so «Все» keeps its history,
+# but it is not shown or restarted from the panel. suicidal is the old id of
+# dismember.
+KNOWN_SERVERS = ("meatgrinder", "hard", "suicidal", "bloodbath", "dismember")
 # Public session lists and pages. Ingest keeps running either way.
 # Set this to False to hide them again, then redeploy the site.
 # Keep web/src/lib/flags.ts SESSIONS_PUBLIC in step with this.
@@ -65,8 +71,9 @@ PANEL_SERVERS = ("meatgrinder", "bloodbath")
 SERVER_LABELS = {
     "meatgrinder": "Meat Grinder",
     "hard": "Hard",
-    "suicidal": "Suicidal",
+    "suicidal": "Dismember",
     "bloodbath": "Bloodbath",
+    "dismember": "Dismember",
 }
 # Public monitor on the landing page (/api/stats/servers). The join link is
 # steam://run/1250//<PUBLIC_HOST>:<game port>, as the old kfmaniacs.ru monitor
@@ -74,8 +81,8 @@ SERVER_LABELS = {
 # the game connects itself. steam://connect/ does not work for KF1 here: Steam
 # verifies the server through its backend first and answers "app id specified
 # by server is invalid" for any port (the servers run RevEmu, not real Steam).
-# The game pushes maxPlayers with each live status: 6, growing to 8 and 10 as the
-# server fills (KFGameTypeMv2.UpdateSlotCount). MAX_PLAYERS is the fallback until
+# The game pushes maxPlayers with each live status: 6, growing to 8, 10 and 12
+# as the server fills (KFGameTypeMv2.UpdateSlotCount). MAX_PLAYERS is the fallback until
 # the first push.
 PUBLIC_HOST = os.environ.get("KFM_PUBLIC_HOST") or os.environ.get("SITE_IP") or "85.192.30.108"
 MAX_PLAYERS = 6
@@ -113,23 +120,169 @@ _DISCORD: dict[str, Any] = {"ts": 0, "ok": False, "error": "", "data": None}
 IGNORED_SERVERS = frozenset({"beta"})
 # Retired slot ids. DB rows, pid files and logs under them belong to the renamed
 # slot: normal → meatgrinder (7717); vote, and hoe before it → bloodbath (7737).
-SERVER_ALIASES = {"normal": "meatgrinder", "vote": "bloodbath", "hoe": "bloodbath"}
+SERVER_ALIASES = {
+    "normal": "meatgrinder",
+    "vote": "bloodbath",
+    "hoe": "bloodbath",
+    "suicidal": "dismember",
+}
 # Game UDP + query UDP (game+1) per slot — used for per-process net counters.
 SLOT_PORTS: dict[str, tuple[int, int]] = {
     "meatgrinder": (7717, 7718),
     # Hard is offline. 7717 is the Meat Grinder server. Keep the name for old rows.
     "hard": (0, 0),
     "suicidal": (7727, 7728),
+    "dismember": (7727, 7728),
     "bloodbath": (7737, 7738),
 }
 PID_DIR = Path(os.environ.get("KFM_PID_DIR", "/home/kfserver/run"))
-_DOWNLOAD_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
-_DOWNLOAD_CACHE_TTL = 60.0
+
+
+class PanelServer:
+    """One public game server. `id` is the stats name; `slot` is the systemd instance on that host."""
+
+    __slots__ = ("id", "label", "host", "port", "query", "slot", "ssh", "region", "country")
+
+    def __init__(
+        self,
+        id: str,
+        label: str,
+        host: str,
+        port: int,
+        query: int,
+        slot: str,
+        ssh: str = "",
+        region: str = "",
+        country: str = "",
+    ) -> None:
+        self.id = id
+        self.label = label
+        self.host = host
+        self.port = port
+        self.query = query
+        self.slot = slot
+        self.ssh = ssh
+        self.region = region
+        self.country = country
+
+
+def _default_panel() -> list[PanelServer]:
+    rows: list[PanelServer] = []
+    for sid in PANEL_SERVERS:
+        port, query = SLOT_PORTS.get(sid, (0, 0))
+        rows.append(
+            PanelServer(sid, SERVER_LABELS.get(sid, sid), PUBLIC_HOST, port, query, sid, "")
+        )
+    return rows
+
+
+_PANEL: list[PanelServer] = []
+
+
+def load_panel() -> None:
+    """Optional /etc/kfm-panel.servers. One server per line:
+
+    id|label|public-host|game-port|query-port|systemd-slot|ssh-user@wg-ip|region|country
+
+    An empty ssh field means the slot runs on this machine. A ssh target is
+    another VPS: its host-wide CPU, memory and network are pulled over that
+    SSH session for the statistics page. `region` is the short chart label
+    (EU, US). `country` is the flag on the public monitor (RU, US, DE).
+    The EU chart group is the Moscow host; its flag is RU when country is empty.
+    """
+    global _PANEL
+    path = Path(os.environ.get("KFM_PANEL_FILE", "/etc/kfm-panel.servers"))
+    rows: list[PanelServer] = []
+    if path.is_file():
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 6:
+                print(f"kfm-stats: bad panel line: {line}", flush=True)
+                continue
+            sid, label, host, port_s, query_s, slot = parts[:6]
+            ssh = parts[6] if len(parts) > 6 else ""
+            region = parts[7][:32] if len(parts) > 7 else ""
+            country = parts[8][:2].upper() if len(parts) > 8 else ""
+            if country and not country.isalpha():
+                country = ""
+            try:
+                port_i, query_i = int(port_s), int(query_s)
+            except ValueError:
+                print(f"kfm-stats: bad panel ports: {line}", flush=True)
+                continue
+            rows.append(
+                PanelServer(
+                    sid,
+                    label or sid,
+                    host,
+                    port_i,
+                    query_i,
+                    slot or sid,
+                    ssh,
+                    region,
+                    country,
+                )
+            )
+    _PANEL = rows or _default_panel()
+    for spec in _PANEL:
+        SERVER_LABELS[spec.id] = spec.label
+        SLOT_PORTS[spec.id] = (spec.port, spec.query)
+    print(
+        "kfm-stats panel: " + ", ".join(f"{s.id}@{s.host}:{s.port}" for s in _PANEL),
+        flush=True,
+    )
+
+
+def panel_servers() -> list[PanelServer]:
+    return _PANEL or _default_panel()
+
+
+def panel_ids() -> tuple[str, ...]:
+    return tuple(s.id for s in panel_servers())
+
+
+def server_country(spec: PanelServer) -> str:
+    """ISO flag for the public monitor. Chart region stays separate.
+
+    85.192.30.108 is the Moscow VPS. Its chart label is EU; the flag is RU.
+    US and DE already match their chart labels when country is left empty.
+    """
+    code = (spec.country or "").strip().upper()
+    if len(code) == 2 and code.isalpha():
+        return code
+    if spec.host.strip() == "85.192.30.108":
+        return "RU"
+    region = (spec.region or "").strip().upper()
+    if len(region) == 2 and region.isalpha() and region != "EU":
+        return region
+    return ""
+
+
+def panel_by_id(sid: str) -> PanelServer | None:
+    for spec in panel_servers():
+        if spec.id == sid:
+            return spec
+    return None
+
+
+def tracked_server_names() -> tuple[str, ...]:
+    """Slots stored in the DB: the original four, plus any regional panel ids."""
+    extra = tuple(s.id for s in panel_servers() if s.id not in KNOWN_SERVERS)
+    return KNOWN_SERVERS + extra
+
+
 LOAD_INTERVAL_SEC = 2.0
 LOAD_KEEP = 300  # 10 minutes at 2s
 _LOAD_LOCK = threading.Lock()
 _LOAD_SAMPLES: list[dict[str, Any]] = []
 _LOAD_PREV: dict[str, Any] = {}
+# host id -> samples pulled from another VPS (WireGuard SSH). hub host stays in _LOAD_SAMPLES.
+_REMOTE_SAMPLES: dict[str, list[dict[str, Any]]] = {}
+_REMOTE_PREV: dict[str, dict[str, Any]] = {}
+REMOTE_LOAD_STALE_SEC = 20.0
 _PROC_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
 _PROC_PREV: dict[str, dict[str, Any]] = {}
 _ACCT_READY = False
@@ -350,6 +503,37 @@ def _read_pid_rss_kb(pid: int) -> int | None:
     return None
 
 
+def _host_sample_from_counters(
+    prev: dict[str, Any] | None,
+    idle: int,
+    total: int,
+    mem: float,
+    net_b: int,
+    now: float,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """CPU and net rates from two /proc counter reads. First call only stores prev."""
+    state = {"idle": idle, "total": total, "net": net_b, "ts": now}
+    if not prev:
+        return state, None
+    d_total = total - int(prev["total"])
+    d_idle = idle - int(prev["idle"])
+    if d_total <= 0:
+        cpu = 0.0
+    else:
+        cpu = max(0.0, min(100.0, round(100.0 * (1.0 - d_idle / d_total), 2)))
+    dt = max(0.001, now - float(prev["ts"]))
+    d_net = max(0, net_b - int(prev["net"]))
+    net_mbps = round((d_net * 8.0) / dt / 1_000_000.0, 3)
+    sample = {
+        "ts": int(now),
+        "cpu": cpu,
+        "mem": mem,
+        "net_mbps": net_mbps,
+        "scope": "host",
+    }
+    return state, sample
+
+
 def _sample_host_load() -> dict[str, Any] | None:
     """One host sample; needs a previous sample for CPU/net rates."""
     global _LOAD_PREV
@@ -360,30 +544,8 @@ def _sample_host_load() -> dict[str, Any] | None:
         now = time.time()
     except OSError:
         return None
-
-    prev = _LOAD_PREV
-    _LOAD_PREV = {"idle": idle, "total": total, "net": net_b, "ts": now}
-    if not prev:
-        return None
-
-    d_total = total - int(prev["total"])
-    d_idle = idle - int(prev["idle"])
-    if d_total <= 0:
-        cpu = 0.0
-    else:
-        cpu = max(0.0, min(100.0, round(100.0 * (1.0 - d_idle / d_total), 2)))
-
-    dt = max(0.001, now - float(prev["ts"]))
-    d_net = max(0, net_b - int(prev["net"]))
-    net_mbps = round((d_net * 8.0) / dt / 1_000_000.0, 3)
-
-    return {
-        "ts": int(now),
-        "cpu": cpu,
-        "mem": mem,
-        "net_mbps": net_mbps,
-        "scope": "host",
-    }
+    _LOAD_PREV, sample = _host_sample_from_counters(_LOAD_PREV, idle, total, mem, net_b, now)
+    return sample
 
 
 def _sample_slot_load(now: float, host_total: int, mem_total_kb: int) -> None:
@@ -454,31 +616,329 @@ def load_sampler_loop() -> None:
         time.sleep(LOAD_INTERVAL_SEC)
 
 
-def build_load_series(server: str | None = None) -> dict[str, Any]:
-    with _LOAD_LOCK:
-        if server and server in _PROC_SAMPLES:
-            samples = list(_PROC_SAMPLES.get(server) or [])
-            scope = "process"
-        else:
-            samples = list(_LOAD_SAMPLES)
-            scope = "host"
-            server = None
-    now = samples[-1] if samples else None
-    out: dict[str, Any] = {
+def host_groups() -> list[dict[str, Any]]:
+    """One row per machine. This VPS is first; each ssh target is another VPS."""
+    local_servers: list[str] = []
+    local_region = ""
+    remotes: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    used = {"local"}
+    for spec in panel_servers():
+        if not spec.ssh:
+            local_servers.append(spec.id)
+            if spec.region and not local_region:
+                local_region = spec.region
+            continue
+        group = remotes.get(spec.ssh)
+        if group is None:
+            hid = spec.host or spec.ssh
+            if hid in used:
+                hid = spec.ssh
+            used.add(hid)
+            group = {"id": hid, "label": spec.region, "ssh": spec.ssh, "servers": []}
+            remotes[spec.ssh] = group
+            order.append(spec.ssh)
+        group["servers"].append(spec.id)
+        if spec.region and not group["label"]:
+            group["label"] = spec.region
+    return [
+        {"id": "local", "label": local_region, "ssh": "", "servers": local_servers},
+        *[remotes[k] for k in order],
+    ]
+
+
+def _vps_label(group: dict[str, Any]) -> str:
+    label = str(group.get("label") or "").strip()
+    if label:
+        return label
+    servers = list(group.get("servers") or [])
+    if group.get("ssh") and len(servers) == 1:
+        sid = str(servers[0])
+        return SERVER_LABELS.get(sid, sid)
+    return ""
+
+
+def _group_for_server(server: str) -> dict[str, Any] | None:
+    for group in host_groups():
+        if server in group["servers"]:
+            return group
+    return None
+
+
+def _load_chart(
+    samples: list[dict[str, Any]],
+    *,
+    scope: str,
+    server: str | None,
+    label: str,
+    host_id: str,
+) -> dict[str, Any]:
+    now_sample = samples[-1] if samples else None
+    if (
+        host_id != "local"
+        and now_sample is not None
+        and time.time() - float(now_sample["ts"]) > REMOTE_LOAD_STALE_SEC
+    ):
+        now_sample = None
+    return {
         "interval_sec": LOAD_INTERVAL_SEC,
         "scope": scope,
         "server": server or "",
+        "host": host_id,
+        "label": label,
         "ts": [s["ts"] for s in samples],
         "cpu": [s["cpu"] for s in samples],
         "mem": [s["mem"] for s in samples],
         "mem_mb": [s.get("mem_mb") for s in samples],
         "net_mbps": [s["net_mbps"] for s in samples],
-        "now": now,
+        "now": now_sample,
         "tick_ms": [],
         "peak_tick_ms": [],
         "peakTick": -1,
         "peakWindowSec": TICK_PEAK_WINDOW_SEC,
     }
+
+
+# Reads /proc on a remote VPS and prints one JSON counter line per interval.
+# The hub turns two lines into the same CPU % / Mbit/s sample as the local host.
+_REMOTE_COUNTER_SCRIPT = r"""
+import json, sys, time
+
+def counters():
+    with open("/proc/stat", encoding="utf-8") as fh:
+        parts = fh.readline().split()
+    nums = [int(x) for x in parts[1:]]
+    idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+    total = sum(nums)
+    info = {}
+    with open("/proc/meminfo", encoding="utf-8") as fh:
+        for line in fh:
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            info[k.strip()] = int(v.strip().split()[0])
+    mem_total = info.get("MemTotal", 0)
+    avail = info.get("MemAvailable", info.get("MemFree", 0))
+    mem = round(100.0 * max(0, mem_total - avail) / mem_total, 2) if mem_total else 0.0
+    net = 0
+    with open("/proc/net/dev", encoding="utf-8") as fh:
+        lines = fh.readlines()[2:]
+    for line in lines:
+        if ":" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        name = name.strip()
+        if name == "lo" or name.startswith("docker") or name.startswith("veth"):
+            continue
+        cols = rest.split()
+        if len(cols) >= 9:
+            net += int(cols[0]) + int(cols[8])
+    return {"idle": idle, "total": total, "mem": mem, "net": net}
+
+interval = 2.0
+if len(sys.argv) > 1:
+    try:
+        interval = max(1.0, float(sys.argv[1]))
+    except ValueError:
+        pass
+while True:
+    try:
+        sys.stdout.write(json.dumps(counters()) + "\n")
+        sys.stdout.flush()
+    except Exception as exc:
+        sys.stdout.write(json.dumps({"error": str(exc)}) + "\n")
+        sys.stdout.flush()
+    time.sleep(interval)
+"""
+
+
+def _accept_remote_counters(host_id: str, msg: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        idle = int(msg["idle"])
+        total = int(msg["total"])
+        mem = float(msg["mem"])
+        net_b = int(msg["net"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    now = time.time()
+    state, sample = _host_sample_from_counters(
+        _REMOTE_PREV.get(host_id), idle, total, mem, net_b, now
+    )
+    _REMOTE_PREV[host_id] = state
+    if sample is None:
+        return None
+    sample["host"] = host_id
+    with _LOAD_LOCK:
+        buf = _REMOTE_SAMPLES.setdefault(host_id, [])
+        buf.append(sample)
+        if len(buf) > LOAD_KEEP:
+            del buf[: len(buf) - LOAD_KEEP]
+    return sample
+
+
+def _ssh_argv(target: str, *extra: str) -> list[str]:
+    key = os.environ.get("KFM_REGION_SSH_KEY", "/etc/kfm-region/id_ed25519")
+    return [
+        "ssh",
+        "-i",
+        key,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=12",
+        *extra,
+        target,
+    ]
+
+
+def remote_load_loop(host_id: str, target: str) -> None:
+    """Keep one SSH session to a remote VPS and store its host load samples."""
+    last_log = 0.0
+
+    def log(msg: str) -> None:
+        nonlocal last_log
+        now = time.time()
+        if now - last_log < 60:
+            return
+        last_log = now
+        print(msg, flush=True)
+
+    while True:
+        proc: subprocess.Popen[str] | None = None
+        err_parts: list[str] = []
+        err_thread: threading.Thread | None = None
+        announced = False
+        try:
+            proc = subprocess.Popen(
+                [
+                    *_ssh_argv(
+                        target,
+                        "-o",
+                        "ServerAliveInterval=5",
+                        "-o",
+                        "ServerAliveCountMax=2",
+                        "-o",
+                        "LogLevel=ERROR",
+                    ),
+                    "python3",
+                    "-u",
+                    "-",
+                    str(int(LOAD_INTERVAL_SEC)),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+            proc.stdin.write(_REMOTE_COUNTER_SCRIPT)
+            proc.stdin.close()
+
+            def _drain(pipe: Any = proc.stderr, box: list[str] = err_parts) -> None:
+                try:
+                    box.append(pipe.read() or "")
+                except Exception:
+                    pass
+
+            err_thread = threading.Thread(
+                target=_drain, name=f"stats-load-err-{host_id}", daemon=True
+            )
+            err_thread.start()
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("error"):
+                    log(f"kfm-stats: remote load {host_id}: {msg['error']}")
+                    continue
+                sample = _accept_remote_counters(host_id, msg)
+                if sample is not None and not announced:
+                    print(
+                        f"kfm-stats: remote load {host_id} via {target} "
+                        f"cpu={sample['cpu']}% mem={sample['mem']}% "
+                        f"net={sample['net_mbps']} Mbit/s",
+                        flush=True,
+                    )
+                    announced = True
+                    last_log = 0.0
+        except Exception as exc:
+            log(f"kfm-stats: remote load {host_id} failed: {exc}")
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+            if proc is not None:
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            if err_thread is not None:
+                err_thread.join(timeout=2)
+        if announced:
+            print(f"kfm-stats: remote load {host_id} disconnected", flush=True)
+        else:
+            err = "".join(err_parts).strip()
+            detail = f": {err[:400]}" if err else ""
+            log(f"kfm-stats: remote load {host_id} unreachable{detail}")
+        time.sleep(5)
+
+
+def start_remote_load_samplers() -> None:
+    groups = [g for g in host_groups() if g.get("ssh")]
+    if not groups:
+        return
+    key = Path(os.environ.get("KFM_REGION_SSH_KEY", "/etc/kfm-region/id_ed25519"))
+    if not key.is_file():
+        print(f"kfm-stats: remote VPS load off, missing {key}", flush=True)
+        return
+    for group in groups:
+        threading.Thread(
+            target=remote_load_loop,
+            args=(str(group["id"]), str(group["ssh"])),
+            name=f"stats-load-{group['id']}",
+            daemon=True,
+        ).start()
+
+
+def build_load_series(server: str | None = None) -> dict[str, Any]:
+    groups = host_groups()
+    remote: dict[str, Any] | None = None
+    if server:
+        group = _group_for_server(server)
+        if group and group.get("ssh"):
+            remote = group
+    with _LOAD_LOCK:
+        if server and remote is None and server in _PROC_SAMPLES:
+            samples = list(_PROC_SAMPLES.get(server) or [])
+            scope = "process"
+            label = ""
+            host_id = "local"
+        elif remote is not None:
+            samples = list(_REMOTE_SAMPLES.get(str(remote["id"])) or [])
+            scope = "host"
+            label = _vps_label(remote)
+            host_id = str(remote["id"])
+        else:
+            samples = list(_LOAD_SAMPLES)
+            scope = "host"
+            server = None
+            local = groups[0] if groups else {"label": "", "id": "local"}
+            label = _vps_label(local)
+            host_id = "local"
+        host_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for group in groups:
+            if group["id"] == "local":
+                host_samples = list(_LOAD_SAMPLES)
+            else:
+                host_samples = list(_REMOTE_SAMPLES.get(str(group["id"])) or [])
+            host_rows.append((group, host_samples))
+    out = _load_chart(samples, scope=scope, server=server, label=label, host_id=host_id)
     if server:
         with _LIVE_LOCK:
             ticks = list(_TICK_SAMPLES.get(server) or [])
@@ -514,8 +974,20 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
         out["tick_raw"] = [int(t["ms"]) for t in ticks]
         out["peakTick"] = _peak_tick_from_samples(ticks)
         out["live"] = get_live_status(server)
+    out["hosts"] = [
+        _load_chart(
+            host_samples,
+            scope="host",
+            server=None,
+            label=_vps_label(group),
+            host_id=str(group["id"]),
+        )
+        for group, host_samples in host_rows
+    ]
     # Always include all slots so tab traffic-lights stay current.
-    out["liveAll"] = {s: get_live_status(s) for s in KNOWN_SERVERS}
+    out["liveAll"] = {
+        s: get_live_status(s) for s in tuple(dict.fromkeys(KNOWN_SERVERS + panel_ids()))
+    }
     return out
 
 
@@ -1046,9 +1518,10 @@ def build_public_servers() -> dict[str, Any]:
     come from the last snapshot (or the open DB session) and may be old.
     """
     out = []
-    for slot in PANEL_SERVERS:
+    for spec in panel_servers():
+        slot = spec.id
         live = get_live_status(slot)
-        port = SLOT_PORTS.get(slot, (0, 0))[0]
+        port = spec.port
         players = [_public_live_player(p) for p in (live.get("players") or [])]
         # A DB fallback is that open row. A live push contributes a key only;
         # the link is filled in once that key has a row.
@@ -1057,10 +1530,11 @@ def build_public_servers() -> dict[str, Any]:
         out.append(
             {
                 "id": slot,
-                "label": SERVER_LABELS.get(slot, slot),
-                "host": PUBLIC_HOST,
+                "label": spec.label,
+                "host": spec.host,
                 "port": port,
-                "steam": f"steam://run/{KF_APP_ID}//{PUBLIC_HOST}:{port}",
+                "country": server_country(spec),
+                "steam": f"steam://run/{KF_APP_ID}//{spec.host}:{port}",
                 "map": str(live.get("map") or ""),
                 "difficulty": float(live.get("difficulty") or 0),
                 "difficultyName": difficulty_name(live.get("difficulty")),
@@ -1100,13 +1574,10 @@ def steam_query_port(slot: str) -> int:
     return STEAM_BASE_QUERY_PORT + (port - STEAM_BASE_GAME_PORT) if port else 0
 
 
-def fetch_steam_listing() -> dict[str, dict[str, Any]]:
-    """One GetServerList call filtered to this host; slot -> listing entry."""
-    key = steam_api_key()
-    if not key:
-        raise RuntimeError("STEAM_WEB_API_KEY unset")
+def _steam_list_host(key: str, host: str) -> dict[int, dict[str, Any]]:
+    """One GetServerList call for one public IP; game port -> listing."""
     query = urlencode(
-        {"key": key, "filter": f"\\appid\\{KF_APP_ID}\\addr\\{PUBLIC_HOST}", "limit": 50}
+        {"key": key, "filter": f"\\appid\\{KF_APP_ID}\\addr\\{host}", "limit": 50}
     )
     req = urllib.request.Request(
         f"{STEAM_WEB_API_URL}?{query}", headers={"User-Agent": "kfm-stats/1.0"}
@@ -1128,13 +1599,24 @@ def fetch_steam_listing() -> dict[str, dict[str, Any]]:
             "bots": int(srv.get("bots") or 0),
             "secure": bool(srv.get("secure")),
         }
+    return by_port
+
+
+def fetch_steam_listing() -> dict[str, dict[str, Any]]:
+    """One GetServerList call per public IP; panel id -> listing entry."""
+    key = steam_api_key()
+    if not key:
+        raise RuntimeError("STEAM_WEB_API_KEY unset")
+    by_host: dict[str, dict[int, dict[str, Any]]] = {}
+    for host in dict.fromkeys(spec.host for spec in panel_servers()):
+        by_host[host] = _steam_list_host(key, host)
     listed: dict[str, dict[str, Any]] = {}
-    for slot in PANEL_SERVERS:
-        hit = by_port.get(SLOT_PORTS.get(slot, (0, 0))[0])
-        entry: dict[str, Any] = {"listed": hit is not None, "queryPort": steam_query_port(slot)}
+    for spec in panel_servers():
+        hit = by_host.get(spec.host, {}).get(spec.port)
+        entry: dict[str, Any] = {"listed": hit is not None, "queryPort": steam_query_port(spec.id)}
         if hit:
             entry.update(hit)
-        listed[slot] = entry
+        listed[spec.id] = entry
     return listed
 
 
@@ -1498,6 +1980,33 @@ def init_schema(con) -> None:
             "ALTER TABLE `site_daily_snapshot` ADD PRIMARY KEY (`day`, `server_name`)"
         )
         print("kfm-stats: migrated site_daily_snapshot +server_name", flush=True)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS `site_companion_downloads` (
+          `id` BIGINT NOT NULL AUTO_INCREMENT,
+          `ts` INT NOT NULL,
+          `day` INT NOT NULL,
+          `path` VARCHAR(128) NOT NULL,
+          PRIMARY KEY (`id`),
+          KEY `idx_site_dl_day` (`day`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS `site_push_subscriptions` (
+          `endpoint_hash` CHAR(64) NOT NULL,
+          `steam_id` VARCHAR(32) NOT NULL,
+          `endpoint` TEXT NOT NULL,
+          `p256dh` VARCHAR(255) NOT NULL,
+          `auth` VARCHAR(255) NOT NULL,
+          `locale` VARCHAR(8) NOT NULL DEFAULT 'en',
+          `created_at` INT NOT NULL,
+          PRIMARY KEY (`endpoint_hash`),
+          KEY `idx_site_push_steam` (`steam_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
     # Lobby shells with no player row at all.
     cur.execute(
         """
@@ -1546,7 +2055,7 @@ def canon_server_name(raw: Any) -> str:
     """Known difficulty slot, or empty when the name must not be stored."""
     s = str(raw or "").strip().lower()[:64]
     s = SERVER_ALIASES.get(s, s)
-    if s in KNOWN_SERVERS:
+    if s in KNOWN_SERVERS or s in panel_ids():
         return s
     return ""
 
@@ -2054,97 +2563,118 @@ def ingest_daily(con, p: dict[str, Any]) -> None:
         )
 
 
-def site_log_path() -> Path:
-    return Path(
-        os.environ.get("SITE_LOG", "/var/log/caddy/kfm.manul.lol.log").strip()
-        or "/var/log/caddy/kfm.manul.lol.log"
-    )
+def site_root() -> Path:
+    raw = (os.environ.get("SITE_ROOT") or "/var/www/kfm.manul.lol").strip()
+    return Path(raw or "/var/www/kfm.manul.lol")
 
 
-def site_log_files(primary: Path) -> list[Path]:
-    """Current Caddy log + rolled siblings (name, name.1, name.*.log, …)."""
-    if not primary.parent.is_dir():
-        return [primary] if primary.is_file() else []
-    stem = primary.name
-    found: list[Path] = []
-    for p in primary.parent.iterdir():
-        if not p.is_file():
-            continue
-        if p.name == stem or p.name.startswith(stem + "."):
-            found.append(p)
-    found.sort(key=lambda p: (p != primary, p.name))
-    return found or ([primary] if primary.is_file() else [])
-
-
-def _log_uri(row: dict[str, Any]) -> str:
-    req = row.get("request") if isinstance(row.get("request"), dict) else {}
-    uri = req.get("uri") or req.get("url") or row.get("uri") or row.get("url") or ""
-    return str(uri).split("?", 1)[0]
-
-
-def _log_day(row: dict[str, Any]) -> int | None:
-    ts = row.get("ts")
-    try:
-        if ts is None:
-            return None
-        return day_from_ts(int(float(ts)))
-    except (TypeError, ValueError):
+def companion_file_name(url_path: str) -> str | None:
+    """On-disk name for a companion download URL, or None when it is not one."""
+    name = (url_path or "").split("?", 1)[0].rstrip("/") or "/"
+    if name.lower() == "/download":
+        return "KFM-Companion.exe"
+    base = name[1:] if name.startswith("/") else name
+    if "/" in base or "\\" in base or not COMPANION_FILE_RE.fullmatch(base):
         return None
+    return base
 
 
-def parse_download_stats(min_day: int) -> dict[str, Any]:
-    """Count Companion downloads from Caddy JSON access logs (cached)."""
-    now = time.monotonic()
-    cached = _DOWNLOAD_CACHE.get("data")
-    if cached is not None and (now - float(_DOWNLOAD_CACHE["ts"])) < _DOWNLOAD_CACHE_TTL:
-        return cached
+def companion_download_path(root: Path, name: str) -> Path | None:
+    """The file inside SITE_ROOT. Rejects anything that escapes that directory."""
+    try:
+        base = root.resolve()
+        path = (base / name).resolve()
+    except OSError:
+        return None
+    if path.parent != base or not path.is_file():
+        return None
+    return path
 
+
+def _byte_range(header: str | None, size: int) -> tuple[int, int] | None | str:
+    """A single `bytes` range. None means send the whole file. 'bad' is 416."""
+    if not header or size <= 0:
+        return None
+    raw = header.strip()
+    if not raw.lower().startswith("bytes=") or "," in raw:
+        return None
+    spec = raw.split("=", 1)[1].strip()
+    match = re.fullmatch(r"(\d*)-(\d*)", spec)
+    if not match or (match.group(1) == "" and match.group(2) == ""):
+        return None
+    if match.group(1) == "":
+        tail = int(match.group(2))
+        if tail <= 0:
+            return None
+        start = max(0, size - tail)
+        end = size - 1
+    else:
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else size - 1
+    if start >= size or end < start:
+        return "bad"
+    return (start, min(end, size - 1))
+
+
+def record_companion_download(con, path: str) -> None:
+    """One row per download. A database error does not fail the transfer."""
+    if con is None:
+        print("companion download not recorded: no database", flush=True)
+        return
+    ts = now_ts()
+    try:
+        with LOCK:
+            ensure_db(con)
+            con.cursor().execute(
+                """
+                INSERT INTO `site_companion_downloads` (`ts`, `day`, `path`)
+                VALUES (%s, %s, %s)
+                """,
+                (ts, day_from_ts(ts), path[:128]),
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"companion download insert failed: {exc}", flush=True)
+
+
+def companion_download_stats(con, min_day: int) -> dict[str, Any]:
+    """Daily companion downloads from site_companion_downloads."""
     by_day: dict[int, int] = {}
     by_path: dict[str, int] = {}
     total = 0
-    files_read = 0
-    for path in site_log_files(site_log_path()):
-        if not path.is_file():
-            continue
-        files_read += 1
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    status = int(row.get("status") or row.get("status_code") or 0)
-                    if status < 200 or status >= 400:
-                        continue
-                    uri = _log_uri(row)
-                    if not DOWNLOAD_PATH_RE.match(uri):
-                        continue
-                    day = _log_day(row)
-                    total += 1
-                    by_path[uri] = by_path.get(uri, 0) + 1
-                    if day is not None and day >= min_day:
-                        by_day[day] = by_day.get(day, 0) + 1
-        except OSError as exc:
-            print(f"download log read skipped {path}: {exc}", flush=True)
-
+    try:
+        with LOCK:
+            ensure_db(con)
+            cur = con.cursor()
+            cur.execute(
+                """
+                SELECT `day`, COUNT(*) AS c
+                FROM `site_companion_downloads`
+                WHERE `day` >= %s
+                GROUP BY `day`
+                """,
+                (min_day,),
+            )
+            by_day = {int(r["day"]): int(r["c"]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) AS c FROM `site_companion_downloads`")
+            total = int((cur.fetchone() or {}).get("c") or 0)
+            cur.execute(
+                """
+                SELECT `path` AS name, COUNT(*) AS c
+                FROM `site_companion_downloads`
+                GROUP BY `path`
+                ORDER BY c DESC
+                """
+            )
+            by_path = {str(r["name"]): int(r["c"]) for r in cur.fetchall()}
+    except Exception as exc:  # noqa: BLE001
+        print(f"companion download stats failed: {exc}", flush=True)
     today = day_from_ts(now_ts())
-    data = {
+    return {
         "total": total,
         "today": int(by_day.get(today, 0)),
         "by_day": by_day,
         "by_path": by_path,
-        "log": str(site_log_path()),
-        "files": files_read,
     }
-    _DOWNLOAD_CACHE["ts"] = now
-    _DOWNLOAD_CACHE["data"] = data
-    return data
 
 
 def normalize_server(raw: str | None) -> str | None:
@@ -2170,7 +2700,7 @@ def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tup
         placeholders = ",".join(["%s"] * len(names))
         return f" AND {col} IN ({placeholders})", names
     # «Все»: live slots plus their retired ids — exclude legacy beta / empty / unknown.
-    names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+    names = tracked_server_names() + tuple(SERVER_ALIASES.keys())
     placeholders = ",".join(["%s"] * len(names))
     return f" AND {col} IN ({placeholders})", tuple(names)
 
@@ -2198,7 +2728,7 @@ def _payload_debug(p: dict[str, Any]) -> bool:
 def list_servers(con) -> list[dict[str, Any]]:
     """Servers shown in the admin panel. Rows under a retired id count for its slot."""
     cur = con.cursor()
-    names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+    names = tracked_server_names() + tuple(SERVER_ALIASES.keys())
     placeholders = ",".join(["%s"] * len(names))
     cur.execute(
         f"""
@@ -2211,7 +2741,7 @@ def list_servers(con) -> list[dict[str, Any]]:
     )
     counts = {str(r["name"]): int(r["c"]) for r in cur.fetchall()}
     out = []
-    for name in PANEL_SERVERS:
+    for name in panel_ids():
         c = sum(int(counts.get(n, 0)) for n in server_name_variants(name))
         out.append({"name": name, "c": c})
     return out
@@ -2241,7 +2771,7 @@ def day_list(
             (min_day, *srv_args, min_day, *snap_names),
         )
     else:
-        names = KNOWN_SERVERS + tuple(SERVER_ALIASES.keys())
+        names = tracked_server_names() + tuple(SERVER_ALIASES.keys())
         placeholders = ",".join(["%s"] * len(names))
         cur.execute(
             f"""
@@ -2352,7 +2882,7 @@ def _day_unique(con, day: int, server: str | None) -> int:
         _pk, snap = _snap_numbers(con, day, server)
         return resolve_unique(rows, distinct, maps, snap)
     named = 0
-    for slot in KNOWN_SERVERS:
+    for slot in tracked_server_names():
         _pk, snap = _snap_numbers(con, day, slot)
         named += snap
     # A blank server_name snapshot is not on any server tab. Ignore it so «Все»
@@ -2366,7 +2896,7 @@ def _day_peak(con, day: int, server: str | None) -> int:
         snap, _uniq = _snap_numbers(con, day, server)
         return resolve_peak(rows, sess_peak, maps, snap)
     total = 0
-    for slot in KNOWN_SERVERS:
+    for slot in tracked_server_names():
         rows, _distinct, maps, sess_peak = session_activity(con, day, slot)
         snap, _uniq = _snap_numbers(con, day, slot)
         total += resolve_peak(rows, sess_peak, maps, snap)
@@ -2476,7 +3006,7 @@ def player_countries(con, ms_srv_sql: str, ms_srv_args: tuple[Any, ...]) -> list
 def build_summary(con, server: str | None = None) -> dict[str, Any]:
     today = day_from_ts(now_ts())
     min_day = add_days(today, -(DAYS - 1))
-    dl = parse_download_stats(min_day)
+    dl = companion_download_stats(con, min_day)
     srv_sql, srv_args = server_sql(server)
     with LOCK:
         ensure_db(con)
@@ -2558,8 +3088,16 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
         "server": server or "",
         "serverTabs": [{"name": "", "label": "Все"}]
         + [
-            {"name": s, "label": SERVER_LABELS.get(s, s)}
-            for s in PANEL_SERVERS
+            {
+                "name": spec.id,
+                "label": spec.label,
+                "remote": bool(spec.ssh),
+                "vps": _vps_label(_group_for_server(spec.id) or {}),
+            }
+            for spec in panel_servers()
+        ],
+        "vpsHosts": [
+            {"id": g["id"], "label": _vps_label(g)} for g in host_groups()
         ],
         "days": days,
         "peak": peak,
@@ -2865,6 +3403,575 @@ def steam_me_payload(steamid: str) -> dict[str, Any]:
     }
 
 
+# Steam friend ids for the signed-in player. The Web API only returns a public
+# friends list; a private one is "private", not an error. Ids are cached so the
+# header poll does not call Steam on every refresh.
+_FRIEND_CACHE: dict[str, tuple[float, str, list[str]]] = {}
+_FRIEND_INFLIGHT: dict[str, threading.Event] = {}
+_FRIENDS_LOCK = threading.Lock()
+_FRIEND_OK_TTL = 600.0
+_FRIEND_MISS_TTL = 60.0
+_FRIEND_FRESH_SEC = 30.0
+_FRIEND_CAP = 500
+
+
+def _steam_cdn_url(raw: str) -> str:
+    url = str(raw or "").strip()
+    if not url.startswith("https://"):
+        return ""
+    host = (urlparse(url).hostname or "").lower()
+    if host == "steamstatic.com" or host.endswith(".steamstatic.com") or host.endswith(".akamaihd.net"):
+        return url
+    return ""
+
+
+def _friend_cache_get(steamid: str, fresh: bool) -> tuple[str, list[str]] | None:
+    with _FRIENDS_LOCK:
+        hit = _FRIEND_CACHE.get(steamid)
+    if not hit:
+        return None
+    age = time.time() - hit[0]
+    ttl = _FRIEND_OK_TTL if hit[1] == "ok" else _FRIEND_MISS_TTL
+    if age < _FRIEND_FRESH_SEC or (not fresh and age < ttl):
+        return hit[1], list(hit[2])
+    return None
+
+
+def _fetch_steam_friend_ids(steamid: str) -> tuple[str, list[str]]:
+    key = _STEAM_KEY()
+    if not key:
+        return "noconfig", []
+    url = (
+        "https://api.steampowered.com/ISteamUser/GetFriendList/v1/"
+        f"?key={urllib.parse.quote(key)}&steamid={urllib.parse.quote(steamid)}&relationship=friend"
+    )
+    try:
+        payload = json.loads(_http_get(url, 1_000_000).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # 401/403 is Steam refusing a non-public friends list.
+        status = "private" if exc.code in (401, 403) else "unavailable"
+        print(f"steam friends: HTTP {exc.code}", flush=True)
+        return status, []
+    except Exception as exc:  # noqa: BLE001
+        print(f"steam friends: {type(exc).__name__}", flush=True)
+        return "unavailable", []
+    if not isinstance(payload, dict):
+        return "unavailable", []
+    ids: list[str] = []
+    raw_list = payload.get("friendslist")
+    rows = raw_list.get("friends") if isinstance(raw_list, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("steamid") or "")
+        if _STEAM_ID_RE.fullmatch(sid) and sid != steamid:
+            ids.append(sid)
+    return "ok", list(dict.fromkeys(ids))
+
+
+def _steam_friend_ids(steamid: str, *, fresh: bool = False) -> tuple[str, list[str]]:
+    cached = _friend_cache_get(steamid, fresh)
+    if cached is not None:
+        return cached
+    with _FRIENDS_LOCK:
+        cached = _FRIEND_CACHE.get(steamid)
+        if cached:
+            age = time.time() - cached[0]
+            ttl = _FRIEND_OK_TTL if cached[1] == "ok" else _FRIEND_MISS_TTL
+            if age < _FRIEND_FRESH_SEC or (not fresh and age < ttl):
+                return cached[1], list(cached[2])
+        event = _FRIEND_INFLIGHT.get(steamid)
+        owner = event is None
+        if owner:
+            event = threading.Event()
+            _FRIEND_INFLIGHT[steamid] = event
+    if not owner:
+        assert event is not None
+        event.wait(20)
+        cached = _friend_cache_get(steamid, False)
+        if cached is not None:
+            return cached
+        return "unavailable", []
+    assert event is not None
+    try:
+        status, ids = _fetch_steam_friend_ids(steamid)
+        with _FRIENDS_LOCK:
+            _FRIEND_CACHE[steamid] = (time.time(), status, ids)
+        return status, list(ids)
+    finally:
+        with _FRIENDS_LOCK:
+            _FRIEND_INFLIGHT.pop(steamid, None)
+        event.set()
+
+
+def _fresh_live_players() -> dict[str, dict[str, str]]:
+    """SteamID64 -> server the player is on, ignoring stale snapshots."""
+    found: dict[str, dict[str, str]] = {}
+    for spec in panel_servers():
+        live = get_live_status(spec.id)
+        if live.get("stale"):
+            continue
+        join = ""
+        if spec.port:
+            join = f"steam://run/{KF_APP_ID}//{spec.host}:{spec.port}"
+        players = live.get("players") or []
+        online = int(live.get("online") or len(players))
+        cap = int(live.get("maxPlayers") or 0) or MAX_PLAYERS
+        full = "1" if cap > 0 and online >= cap else ""
+        for p in players:
+            steam = str(p.get("steam") or p.get("steamId") or "").strip()
+            if not _STEAM_ID_RE.fullmatch(steam) or steam in found:
+                continue
+            found[steam] = {
+                "serverId": spec.id,
+                "server": spec.label,
+                "map": str(live.get("map") or ""),
+                "perk": str(p.get("perk") or ""),
+                "join": join,
+                "full": full,
+            }
+    return found
+
+
+def _cap_friend_ids(ids: list[str], live: dict[str, dict[str, str]]) -> list[str]:
+    if len(ids) <= _FRIEND_CAP:
+        return ids
+    playing = [sid for sid in ids if sid in live]
+    rest = [sid for sid in ids if sid not in live]
+    return (playing + rest)[:_FRIEND_CAP]
+
+
+def _known_player_ids(con, ids: list[str]) -> set[str]:
+    """SteamIDs that have an account or a recorded session on these servers."""
+    if con is None or not ids:
+        return set()
+    found: set[str] = set()
+    marks = ",".join(["%s"] * len(ids))
+    params = tuple(ids)
+    for table in ("players", "site_session_players"):
+        try:
+            rows = _query(
+                con,
+                f"SELECT DISTINCT `steam_id` FROM `{table}` WHERE `steam_id` IN ({marks})",
+                params,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"steam friends played lookup {table}: {type(exc).__name__}", flush=True)
+            continue
+        for row in rows:
+            sid = str(row.get("steam_id") or "")
+            if sid:
+                found.add(sid)
+    return found
+
+
+def _friend_records(
+    ids: list[str],
+    summaries: dict[str, dict[str, str]],
+    live: dict[str, dict[str, str]],
+    played: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    known = played or set()
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sid in ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        meta = summaries.get(sid) or {}
+        here = live.get(sid) or {}
+        name = str(meta.get("name") or sid)
+        vanity = str(meta.get("vanity") or "")
+        slug = vanity if re.fullmatch(r"[A-Za-z0-9_-]{2,32}", vanity) else sid
+        playing = bool(here)
+        rows.append(
+            {
+                "steamId": sid,
+                "name": name,
+                "profile": slug,
+                "avatar": str(meta.get("avatar") or ""),
+                "playing": playing,
+                "played": sid in known or playing,
+                "serverId": str(here.get("serverId") or ""),
+                "server": str(here.get("server") or ""),
+                "map": str(here.get("map") or ""),
+                "perk": str(here.get("perk") or ""),
+                "join": str(here.get("join") or "") if playing else "",
+                "full": playing and here.get("full") == "1",
+            }
+        )
+    rows.sort(key=lambda r: (0 if r["playing"] else 1, str(r["name"]).casefold()))
+    return rows
+
+
+def steam_friends_payload(steamid: str, con=None, *, fresh: bool = False) -> dict[str, Any]:
+    if not steamid:
+        return {"ok": False, "status": "login", "friends": []}
+    status, ids = _steam_friend_ids(steamid, fresh=fresh)
+    if status != "ok":
+        return {"ok": status != "unavailable", "status": status, "friends": []}
+    live = _fresh_live_players()
+    ids = _cap_friend_ids(ids, live)
+    played = _known_player_ids(con, ids) | set(live)
+    return {
+        "ok": True,
+        "status": "ok",
+        "friends": _friend_records(ids, _steam_summaries(ids), live, played),
+    }
+
+
+# Device notifications (Web Push). A subscription is one browser or phone.
+# Keys live in KFM_VAPID_FILE so a restart does not invalidate them.
+# python3-cryptography does the ECDH; without it the site still runs and the
+# open tab falls back to a local notification.
+_VAPID: tuple[Any, str] | None = None
+_VAPID_LOCK = threading.Lock()
+_PUSH_SEEN: dict[str, set[str]] = {}
+_PUSH_PRIMED: set[str] = set()
+_PUSH_LOCK = threading.Lock()
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(data: str) -> bytes:
+    pad = "=" * ((4 - len(data) % 4) % 4)
+    return base64.urlsafe_b64decode((data + pad).encode("ascii"))
+
+
+def push_crypto_ok() -> bool:
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _vapid_pair() -> tuple[Any, str] | None:
+    """(private key, uncompressed public key as base64url) or None."""
+    global _VAPID
+    with _VAPID_LOCK:
+        if _VAPID is not None:
+            return _VAPID
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+        except Exception as exc:  # noqa: BLE001
+            print(f"friend push off: {type(exc).__name__}", flush=True)
+            return None
+        path = Path(os.environ.get("KFM_VAPID_FILE") or "/var/lib/kfm-vapid.json")
+        private = None
+        if path.is_file():
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                private = serialization.load_pem_private_key(
+                    str(saved.get("private") or "").encode("utf-8"), password=None
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"friend push key unreadable: {type(exc).__name__}", flush=True)
+                private = None
+        if private is None:
+            private = ec.generate_private_key(ec.SECP256R1())
+            pem = private.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ).decode("ascii")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"private": pem}), encoding="utf-8")
+                os.chmod(path, 0o600)
+            except OSError as exc:
+                print(f"friend push key not saved ({path}): {exc}", flush=True)
+        public = private.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+        _VAPID = (private, _b64url(public))
+        return _VAPID
+
+
+def vapid_public_key() -> str:
+    pair = _vapid_pair()
+    return pair[1] if pair else ""
+
+
+def _push_endpoint_ok(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        return False
+    suffixes = (
+        ".googleapis.com",
+        ".google.com",
+        ".mozilla.com",
+        ".mozilla.org",
+        ".windows.com",
+        ".apple.com",
+        ".push.apple.com",
+    )
+    return any(host == suffix[1:] or host.endswith(suffix) for suffix in suffixes)
+
+
+def _webpush_body(user_public: bytes, auth_secret: bytes, plaintext: bytes, salt: bytes | None = None) -> bytes:
+    """RFC 8291 aes128gcm body for one Web Push message."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    if salt is None:
+        salt = os.urandom(16)
+    local = ec.generate_private_key(ec.SECP256R1())
+    as_public = local.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    remote = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), user_public)
+    shared = local.exchange(ec.ECDH(), remote)
+    ikm = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=auth_secret,
+        info=b"WebPush: info\x00" + user_public + as_public,
+    ).derive(shared)
+    cek = HKDF(
+        algorithm=hashes.SHA256(),
+        length=16,
+        salt=salt,
+        info=b"Content-Encoding: aes128gcm\x00",
+    ).derive(ikm)
+    nonce = HKDF(
+        algorithm=hashes.SHA256(),
+        length=12,
+        salt=salt,
+        info=b"Content-Encoding: nonce\x00",
+    ).derive(ikm)
+    record = AESGCM(cek).encrypt(nonce, plaintext + b"\x02", None)
+    return salt + struct.pack(">I", 4096) + bytes([len(as_public)]) + as_public + record
+
+
+def _vapid_headers(endpoint: str, private: Any) -> dict[str, str]:
+    from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    parsed = urlparse(endpoint)
+    aud = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port and parsed.port not in (80, 443):
+        aud += f":{parsed.port}"
+    public = private.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    header = _b64url(b'{"typ":"JWT","alg":"ES256"}')
+    payload = _b64url(
+        json.dumps(
+            {"aud": aud, "exp": int(time.time()) + 12 * 3600, "sub": "mailto:admin@kf-maniacs.com"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    signing = f"{header}.{payload}".encode("ascii")
+    der = private.sign(signing, ec_sign_pad())
+    r, s = asym_utils.decode_dss_signature(der)
+    token = f"{header}.{payload}.{_b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
+    return {
+        "Authorization": f"vapid t={token},k={_b64url(public)}",
+        "Content-Encoding": "aes128gcm",
+        "TTL": "600",
+        "Content-Type": "application/octet-stream",
+    }
+
+
+def ec_sign_pad():
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    return ec.ECDSA(hashes.SHA256())
+
+
+def _send_webpush(endpoint: str, p256dh: str, auth: str, payload: bytes) -> int:
+    """HTTP status from the push service. 0 when the request itself failed."""
+    pair = _vapid_pair()
+    if pair is None or not _push_endpoint_ok(endpoint):
+        return 0
+    private, _public = pair
+    try:
+        body = _webpush_body(_b64url_decode(p256dh), _b64url_decode(auth), payload)
+        headers = _vapid_headers(endpoint, private)
+    except Exception as exc:  # noqa: BLE001
+        print(f"friend push encrypt: {type(exc).__name__}", flush=True)
+        return 0
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):  # noqa: ANN001
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    try:
+        with opener.open(req, timeout=10) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except Exception as exc:  # noqa: BLE001
+        print(f"friend push send: {type(exc).__name__}", flush=True)
+        return 0
+
+
+def _push_exec(con, sql: str, params: tuple[Any, ...] = ()) -> None:
+    with LOCK:
+        ensure_db(con)
+        cur = con.cursor()
+        cur.execute(sql, params)
+
+
+def save_push_subscription(con, steamid: str, endpoint: str, p256dh: str, auth: str, locale: str) -> bool:
+    if not _STEAM_ID_RE.fullmatch(steamid) or not _push_endpoint_ok(endpoint):
+        return False
+    try:
+        if len(_b64url_decode(p256dh)) != 65 or not _b64url_decode(auth):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    locale = locale if re.fullmatch(r"[a-z]{2}", locale or "") else "en"
+    digest = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+    _push_exec(
+        con,
+        """
+        INSERT INTO `site_push_subscriptions`
+          (`endpoint_hash`, `steam_id`, `endpoint`, `p256dh`, `auth`, `locale`, `created_at`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+          `steam_id`=VALUES(`steam_id`),
+          `endpoint`=VALUES(`endpoint`),
+          `p256dh`=VALUES(`p256dh`),
+          `auth`=VALUES(`auth`),
+          `locale`=VALUES(`locale`)
+        """,
+        (digest, steamid, endpoint, p256dh, auth, locale, now_ts()),
+    )
+    rows = _query(
+        con,
+        "SELECT `endpoint_hash` FROM `site_push_subscriptions` WHERE `steam_id`=%s ORDER BY `created_at` DESC",
+        (steamid,),
+    )
+    for extra in rows[5:]:
+        _push_exec(
+            con,
+            "DELETE FROM `site_push_subscriptions` WHERE `endpoint_hash`=%s",
+            (str(extra.get("endpoint_hash") or ""),),
+        )
+    return True
+
+
+def delete_push_subscription(con, steamid: str, endpoint: str) -> None:
+    digest = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+    _push_exec(
+        con,
+        "DELETE FROM `site_push_subscriptions` WHERE `endpoint_hash`=%s AND `steam_id`=%s",
+        (digest, steamid),
+    )
+
+
+def _push_copy(locale: str, name: str, server: str, map_name: str) -> tuple[str, str]:
+    title = {
+        "en": "{name} joined {server}",
+        "ru": "{name} зашёл на {server}",
+        "zh": "{name} 加入了 {server}",
+        "es": "{name} entró en {server}",
+        "pt": "{name} entrou em {server}",
+        "de": "{name} ist {server} beigetreten",
+        "fr": "{name} a rejoint {server}",
+        "pl": "{name} dołączył do {server}",
+        "sv": "{name} gick med i {server}",
+        "ja": "{name} が {server} に参加しました",
+        "it": "{name} è entrato in {server}",
+    }.get(locale, "{name} joined {server}")
+    return title.format(name=name, server=server), _pretty_push_map(map_name)
+
+
+def _pretty_push_map(name: str) -> str:
+    text = name[3:] if name.lower().startswith("kf-") else name
+    text = re.sub(r"_KFM$", "", text, flags=re.I).replace("_", " ")
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    return text.strip()
+
+
+def _friend_push_once(con) -> None:
+    if _vapid_pair() is None:
+        return
+    rows = _query(
+        con,
+        "SELECT `endpoint_hash`, `steam_id`, `endpoint`, `p256dh`, `auth`, `locale` FROM `site_push_subscriptions`",
+    )
+    by_steam: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_steam.setdefault(str(row.get("steam_id") or ""), []).append(row)
+    live = _fresh_live_players()
+    for steamid, devices in by_steam.items():
+        if not steamid:
+            continue
+        status, ids = _steam_friend_ids(steamid)
+        if status != "ok":
+            continue
+        current: dict[str, dict[str, str]] = {}
+        for fid in ids:
+            here = live.get(fid)
+            if here:
+                current[f"{fid}:{here.get('serverId') or ''}"] = {"steamId": fid, **here}
+        with _PUSH_LOCK:
+            first = steamid not in _PUSH_PRIMED
+            if first:
+                _PUSH_PRIMED.add(steamid)
+                _PUSH_SEEN[steamid] = set(current)
+                continue
+            prev = _PUSH_SEEN.get(steamid, set())
+            fresh = [item for key, item in current.items() if key not in prev]
+            _PUSH_SEEN[steamid] = set(current)
+        if not fresh:
+            continue
+        names = _steam_summaries([item["steamId"] for item in fresh])
+        for item in fresh:
+            meta = names.get(item["steamId"]) or {}
+            name = str(meta.get("name") or item["steamId"])
+            vanity = str(meta.get("vanity") or "")
+            slug = vanity if re.fullmatch(r"[A-Za-z0-9_-]{2,32}", vanity) else item["steamId"]
+            for device in devices:
+                locale = str(device.get("locale") or "en")
+                title, body = _push_copy(locale, name, str(item.get("server") or ""), str(item.get("map") or ""))
+                payload = json.dumps(
+                    {
+                        "title": title,
+                        "body": body,
+                        "url": "/players/" + slug,
+                        "tag": "kfm-friend-" + item["steamId"],
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                code = _send_webpush(
+                    str(device.get("endpoint") or ""),
+                    str(device.get("p256dh") or ""),
+                    str(device.get("auth") or ""),
+                    payload,
+                )
+                if code in (404, 410):
+                    _push_exec(
+                        con,
+                        "DELETE FROM `site_push_subscriptions` WHERE `endpoint_hash`=%s",
+                        (str(device.get("endpoint_hash") or ""),),
+                    )
+
+
+def friend_push_loop() -> None:
+    time.sleep(20)
+    while True:
+        con = getattr(Handler, "con", None)
+        if con is not None and push_crypto_ok():
+            try:
+                _friend_push_once(con)
+            except Exception as exc:  # noqa: BLE001
+                print(f"friend push: {type(exc).__name__}", flush=True)
+        time.sleep(25)
+
+
 def _run_as_kfserver(
     argv: list[str],
     *,
@@ -3085,8 +4192,44 @@ def _write_map_request(slot: str, rom: str) -> None:
         pass
 
 
+def _region_ssh(spec: PanelServer) -> list[str]:
+    return _ssh_argv(spec.ssh)
+
+
+def _restart_remote(spec: PanelServer, map_rom: str | None) -> dict[str, Any]:
+    """Restart a slot on another region over WireGuard SSH. systemd unit is spec.slot."""
+    slot = spec.slot
+    unit = f"kf-server@{slot}.service"
+    inner = f"sudo -n /usr/bin/systemctl restart {unit}"
+    if map_rom:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.rom", map_rom):
+            raise ValueError("invalid map name")
+        inner = (
+            f"printf '%s\\n' {shlex.quote(map_rom)} > /home/kfserver/run/{slot}.map && {inner}"
+        )
+    cmd = [*_region_ssh(spec), inner]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "server": spec.id, "stderr": str(exc)[-4000:], "supervised": True}
+    return {
+        "ok": proc.returncode == 0,
+        "server": spec.id,
+        "rc": proc.returncode,
+        "stdout": (proc.stdout or "")[-4000:],
+        "stderr": (proc.stderr or "")[-4000:],
+        "supervised": True,
+        "remote": spec.ssh,
+    }
+
+
 def _restart_slot(slot: str, *, map_rom: str | None = None) -> dict[str, Any]:
     """Restart one slot so that systemd owns the new process."""
+    spec = panel_by_id(slot)
+    if spec and spec.ssh:
+        return _restart_remote(spec, map_rom)
+    if spec:
+        slot = spec.slot
     retired = server_name_variants(slot)[1:]
     if not _unit_managed(slot):
         # No unit on this host: the old way, with nothing watching the result.
@@ -3126,7 +4269,7 @@ def _restart_slot(slot: str, *, map_rom: str | None = None) -> dict[str, Any]:
 
 def admin_restart(server: str | None) -> dict[str, Any]:
     slot = normalize_server(server) if server else None
-    if slot and slot not in PANEL_SERVERS:
+    if slot and slot not in panel_ids():
         raise ValueError("server is off")
     with _ADMIN_LOCK:
         if _ADMIN_BUSY.get("op"):
@@ -3140,7 +4283,7 @@ def admin_restart(server: str | None) -> dict[str, Any]:
         _ADMIN_BUSY["started"] = now_ts()
     try:
         if not slot:
-            results = [_restart_slot(s) for s in PANEL_SERVERS]
+            results = [_restart_slot(s) for s in panel_ids()]
             result = {
                 "ok": all(r.get("ok") for r in results),
                 "servers": results,
@@ -3161,7 +4304,7 @@ def admin_change_map(server: str, map_name: str) -> dict[str, Any]:
     slot = normalize_server(server)
     if not slot:
         raise ValueError("server required")
-    if slot not in PANEL_SERVERS:
+    if slot not in panel_ids():
         raise ValueError("server is off")
     rom = _normalize_map_name(map_name)
     with _ADMIN_LOCK:
@@ -3521,15 +4664,19 @@ _ERA_START = "2026-01-01"
 _PLAYER_SERVER_LABELS = {
     "meatgrinder": "Meat Grinder",
     "hard": "Hard",
-    "suicidal": "Suicidal",
+    "suicidal": "Dismember",
+    "dismember": "Dismember",
     "bloodbath": "Bloodbath",
+    "sacrifice": "Sacrifice",
+    "condemned": "Condemned",
 }
 _BROKEN_NAME = re.compile(r"[\x00-\x1f\x7f]")
 _STEAM_KEY = lambda: (os.environ.get("STEAM_WEB_API_KEY") or "").strip()
 
 # Names the Linux server mangled before SteamNameFixNew.Wire() (every char past
 # U+00FF became 0x7F) are unrecoverable: fall back to the Steam persona name.
-_STEAM_SUMMARIES: dict[str, tuple[float, str, str]] = {}
+# ts, persona name, custom URL, https avatar on Steam's CDN.
+_STEAM_SUMMARIES: dict[str, tuple[float, str, str, str]] = {}
 _STEAM_LOCK = threading.Lock()
 _STEAM_TTL = 3600
 
@@ -3563,7 +4710,7 @@ def _dt_unix(value: Any) -> int | None:
 
 
 def _steam_summaries(steam_ids: list[str]) -> dict[str, dict[str, str]]:
-    """Persona names and custom-URL names for the given SteamID64s (1 h cache)."""
+    """Persona names, custom URLs, and CDN avatars for SteamID64s (1 h cache)."""
     out: dict[str, dict[str, str]] = {}
     now = time.time()
     missing: list[str] = []
@@ -3571,7 +4718,11 @@ def _steam_summaries(steam_ids: list[str]) -> dict[str, dict[str, str]]:
         for sid in steam_ids:
             hit = _STEAM_SUMMARIES.get(sid)
             if hit and now - hit[0] < _STEAM_TTL:
-                out[sid] = {"name": hit[1], "vanity": hit[2]}
+                out[sid] = {
+                    "name": hit[1],
+                    "vanity": hit[2],
+                    "avatar": hit[3] if len(hit) > 3 else "",
+                }
             else:
                 missing.append(sid)
     key = _STEAM_KEY()
@@ -3598,8 +4749,9 @@ def _steam_summaries(steam_ids: list[str]) -> dict[str, dict[str, str]]:
                 profile = str(p.get("profileurl") or "")
                 m = re.search(r"/id/([A-Za-z0-9_-]{2,32})/?(?:$|[?#])", profile)
                 vanity = m.group(1) if m else ""
-                _STEAM_SUMMARIES[sid] = (time.time(), name, vanity)
-                out[sid] = {"name": name, "vanity": vanity}
+                avatar = _steam_cdn_url(str(p.get("avatarmedium") or ""))
+                _STEAM_SUMMARIES[sid] = (time.time(), name, vanity, avatar)
+                out[sid] = {"name": name, "vanity": vanity, "avatar": avatar}
     return out
 
 
@@ -3972,7 +5124,11 @@ def _session_join_url(raw_server: Any, outcome: str, ended: int) -> str:
     """steam:// start link for a map that is still open. Empty otherwise."""
     if outcome != "playing" or ended > 0:
         return ""
-    port = SLOT_PORTS.get(canon_server_name(raw_server), (0, 0))[0]
+    name = canon_server_name(raw_server)
+    spec = panel_by_id(name) if name else None
+    if spec and spec.port > 0:
+        return f"steam://run/{KF_APP_ID}//{spec.host}:{spec.port}"
+    port = SLOT_PORTS.get(name, (0, 0))[0]
     if port <= 0:
         return ""
     return f"steam://run/{KF_APP_ID}//{PUBLIC_HOST}:{port}"
@@ -4462,10 +5618,69 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    def _serve_companion_download(self, url_path: str) -> None:
+        """Serve the installer and record the download. Mid-file ranges do not count again."""
+        name = companion_file_name(url_path)
+        if not name:
+            self._send(404, {"error": "not found"})
+            return
+        file_path = companion_download_path(site_root(), name)
+        if file_path is None:
+            self._send(404, {"error": "not found"})
+            return
+        size = file_path.stat().st_size
+        span = _byte_range(self.headers.get("Range"), size)
+        if span == "bad":
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start = 0 if span is None else span[0]
+        end = size - 1 if span is None else span[1]
+        length = 0 if size == 0 else end - start + 1
+        method = (self.command or "GET").upper()
+        if method == "GET" and start == 0:
+            record_companion_download(self.con, url_path if url_path.startswith("/") else "/" + url_path)
+        self.send_response(206 if span is not None else 200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        if span is not None:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if method == "HEAD" or length <= 0:
+            return
+        try:
+            with file_path.open("rb") as fh:
+                fh.seek(start)
+                left = length
+                while left > 0:
+                    chunk = fh.read(min(256 * 1024, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if companion_file_name(path):
+            self._serve_companion_download(path)
+            return
+        self.send_error(501, "Unsupported method ('HEAD')")
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         qs = parse_qs(parsed.query)
+        if companion_file_name(path):
+            self._serve_companion_download(path)
+            return
         if path in AVATAR_ROUTES:
             # Caddy adds this. The game server connects straight to 127.0.0.1.
             if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
@@ -4614,6 +5829,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/stats/steam/me":
             self._send(200, steam_me_payload(self._player_steamid()))
+            return
+        if path == "/api/stats/steam/friends":
+            steamid = self._player_steamid()
+            if not steamid:
+                self._send(401, {"ok": False, "status": "login", "friends": []})
+                return
+            fresh = str((qs.get("fresh") or ["0"])[0]).lower() in ("1", "true", "yes")
+            try:
+                self._send(200, steam_friends_payload(steamid, self.con, fresh=fresh))
+            except Exception as exc:  # noqa: BLE001
+                print(f"steam friends failed: {type(exc).__name__}", flush=True)
+                self._send(500, {"ok": False, "status": "unavailable", "friends": []})
+            return
+        if path == "/api/stats/steam/push/key":
+            key = vapid_public_key()
+            if not key:
+                self._send(503, {"error": "push not available"})
+                return
+            self._send(200, {"publicKey": key})
             return
         if path == "/api/stats/avatar/full":
             steam = ((qs.get("steam") or [""])[0] or "").strip()
@@ -4776,6 +6010,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
             return
 
+        if path == "/api/stats/steam/push":
+            steamid = self._player_steamid()
+            if not steamid:
+                self._send(401, {"error": "login required"})
+                return
+            try:
+                body = self._read_json_body()
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+                return
+            endpoint = str(body.get("endpoint") or "")
+            if body.get("unsubscribe"):
+                delete_push_subscription(self.con, steamid, endpoint)
+                self._send(200, {"ok": True})
+                return
+            ok = save_push_subscription(
+                self.con,
+                steamid,
+                endpoint,
+                str(body.get("p256dh") or ""),
+                str(body.get("auth") or ""),
+                str(body.get("locale") or "en"),
+            )
+            self._send(200 if ok else 400, {"ok": ok})
+            return
+
         if path in ("/api/stats/admin/restart", "/api/stats/admin/map"):
             if not self._require_auth():
                 return
@@ -4845,6 +6105,7 @@ def load_env_files() -> None:
 
 def main() -> None:
     load_env_files()
+    load_panel()
     if not admin_configured():
         print(
             "WARN: STATS_ADMIN_PASSWORD unset — /statistics APIs will reject until set",
@@ -4856,6 +6117,8 @@ def main() -> None:
     Handler.con = con
     threading.Thread(target=udp_ingest_loop, args=(con,), name="stats-udp", daemon=True).start()
     threading.Thread(target=load_sampler_loop, name="stats-load", daemon=True).start()
+    threading.Thread(target=friend_push_loop, name="stats-push", daemon=True).start()
+    start_remote_load_samplers()
     if steam_api_key():
         threading.Thread(target=steam_poll_loop, name="stats-steam", daemon=True).start()
     else:

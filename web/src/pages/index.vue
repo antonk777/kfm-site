@@ -2,18 +2,22 @@
 // Landing page:
 // server monitor + Discord card (live data from the production stats API),
 // Companion download block and release notes.
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
-import { fetchRecentSessions, SESSION_PREVIEW_LIMIT, type RecentSessionInfo } from "../api";
-import { t } from "../i18n";
-import { prettyMap } from "../lib/format";
-import { SESSIONS_PUBLIC } from "../lib/flags";
-import { PERK_IDS, canonPerkId } from "../lib/perkLevel";
-import { profileTo, steamUser } from "../lib/steam";
-import DifficultyLabel from "../components/DifficultyLabel.vue";
-import PerkIcon from "../components/PerkIcon.vue";
-import SessionTable from "../components/SessionTable.vue";
-import SteamMark from "../components/SteamMark.vue";
+import { fetchRecentSessions, SESSION_PREVIEW_LIMIT, type RecentSessionInfo } from "~/api";
+import ChangelogList from "~/components/ChangelogList.vue";
+import { previewGroups, useModChangelog } from "~/lib/changelog";
+import { countryName } from "~/data/countries";
+import { i18n, t } from "~/i18n";
+import { prettyMap } from "~/lib/format";
+import { SESSIONS_PUBLIC } from "~/lib/flags";
+import { PERK_IDS, canonPerkId } from "~/lib/perkLevel";
+import { friendsById } from "~/lib/friends";
+import { profileTo, steamUser } from "~/lib/steam";
+import DifficultyLabel from "~/components/DifficultyLabel.vue";
+import PerkIcon from "~/components/PerkIcon.vue";
+import SessionTable from "~/components/SessionTable.vue";
+import SteamMark from "~/components/SteamMark.vue";
 
 interface LivePlayer {
   name: string;
@@ -30,6 +34,8 @@ interface ServerInfo {
   label: string;
   host: string;
   port: number;
+  // ISO flag. Missing on monitor payloads from before this field.
+  country?: string;
   steam?: string | { listed?: boolean; checked?: number };
   map: string;
   difficulty: number;
@@ -73,6 +79,9 @@ const copiedIp = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const release = ref<ReleaseInfo | null>(null);
 const changelogText = ref("");
+const { entries: modLog } = useModChangelog();
+const logPreview = computed(() => previewGroups(modLog.value ?? [], i18n.locale, 5));
+const logHasMore = computed(() => (modLog.value?.length ?? 0) > 5);
 
 let serversTimer: ReturnType<typeof setInterval> | undefined;
 let sessionsTimer: ReturnType<typeof setInterval> | undefined;
@@ -129,10 +138,39 @@ function markAvatarFailed(p: LivePlayer): void {
   avatarFailed.value = { ...avatarFailed.value, [id]: true };
 }
 
+// Hosts whose monitor payload has no country yet. 85.192.30.108 is Moscow.
+const COUNTRY_BY_HOST: Record<string, string> = {
+  "85.192.30.108": "ru",
+  "45.86.69.236": "us",
+  "193.5.64.167": "de",
+};
+
+function countryOf(srv: ServerInfo): string {
+  const raw = String(srv.country || "").trim().toLowerCase();
+  if (/^[a-z]{2}$/.test(raw)) return raw;
+  return COUNTRY_BY_HOST[srv.host] || "";
+}
+
+function countryTitle(code: string): string {
+  const cc = code.toUpperCase();
+  try {
+    const name = new Intl.DisplayNames([i18n.locale], { type: "region" }).of(cc);
+    if (name && name.toUpperCase() !== cc) return name;
+  } catch {
+    // Intl.DisplayNames is missing in older browsers.
+  }
+  return countryName(cc, i18n.locale);
+}
+
 function joinUrl(srv: ServerInfo): string {
   return typeof srv.steam === "string" && srv.steam
     ? srv.steam
     : `steam://run/1250//${srv.host}:${srv.port}`;
+}
+
+function serverFull(srv: ServerInfo): boolean {
+  const cap = srv.maxPlayers || 6;
+  return cap > 0 && srv.online >= cap;
 }
 
 function sessionHref(srv: ServerInfo): string {
@@ -142,6 +180,29 @@ function sessionHref(srv: ServerInfo): string {
   if (!srv.sessionId || srv.sessionId <= 0) return "";
   return `/sessions/${srv.sessionId}`;
 }
+
+function isFriend(p: LivePlayer): boolean {
+  const id = steamOf(p);
+  return !!id && friendsById.value.has(id);
+}
+
+const revealedFriends = new Set<string>();
+watch([servers, friendsById], () => {
+  const list = servers.value;
+  if (!list) return;
+  const next = new Set(openLists.value);
+  let changed = false;
+  for (const srv of list) {
+    if (revealedFriends.has(srv.id)) continue;
+    if (!srv.players.some((p) => isFriend(p))) continue;
+    revealedFriends.add(srv.id);
+    if (!next.has(srv.id)) {
+      next.add(srv.id);
+      changed = true;
+    }
+  }
+  if (changed) openLists.value = next;
+});
 
 function togglePlayers(id: string): void {
   const set = new Set(openLists.value);
@@ -273,7 +334,7 @@ onUnmounted(() => {
     <p v-if="!servers" class="empty-note">
       {{ serversFailed ? t("srv.unavailable") : t("srv.loading") }}
     </p>
-    <section v-else class="server-grid">
+    <section v-else class="server-grid" :class="{ five: servers.length === 5 }">
       <article
         v-for="srv in servers"
         :key="srv.id"
@@ -314,7 +375,8 @@ onUnmounted(() => {
           </span>
         </p>
         <div class="server-actions">
-          <a class="join" :href="joinUrl(srv)" rel="noopener">{{ t("srv.join") }}</a>
+          <a v-if="!serverFull(srv)" class="join" :href="joinUrl(srv)" rel="noopener">{{ t("srv.join") }}</a>
+          <span v-else class="full">{{ t("srv.full") }}</span>
           <router-link v-if="sessionHref(srv)" class="session" :to="sessionHref(srv)">{{ t("srv.session") }}</router-link>
           <button type="button" class="plist-toggle" @click="togglePlayers(srv.id)">
             {{ t("srv.players") }} · {{ srv.online }}
@@ -322,26 +384,39 @@ onUnmounted(() => {
         </div>
         <ul v-if="openLists.has(srv.id)" class="plist">
           <li v-if="!srv.players.length" class="empty">{{ t("srv.noPlayers") }}</li>
-          <li v-for="(p, i) in srv.players" :key="steamOf(p) || `${srv.id}-${i}`">
-            <component
-              :is="playerTo(p) ? RouterLink : 'div'"
-              class="plist-player"
-              v-bind="playerTo(p) ? { to: playerTo(p) } : {}"
-            >
-              <span class="avatar" :class="{ placeholder: !avatarUrl(p) }">
-                <img v-if="avatarUrl(p)" :src="avatarUrl(p)" alt="" @error="markAvatarFailed(p)" />
-                <img v-else class="ph" src="/assets/avatar-skull.svg" alt="" />
-              </span>
-              <span class="name">{{ p.name || "???" }}</span>
-              <PerkIcon
-                v-if="perkId(p) || perkLevelOf(p) !== null"
-                :perk="perkId(p) || p.perk"
-                :level="perkLevelOf(p)"
-                :prestige-rank="p.prestigeRank ?? 0"
-                :size="26"
-                :title="perkTitle(p)"
-              />
-            </component>
+          <li
+            v-for="(p, i) in srv.players"
+            :key="steamOf(p) || `${srv.id}-${i}`"
+            :class="{ friend: isFriend(p) }"
+          >
+            <div class="plist-row">
+              <component
+                :is="playerTo(p) ? RouterLink : 'div'"
+                class="plist-player"
+                v-bind="playerTo(p) ? { to: playerTo(p) } : {}"
+              >
+                <span class="avatar" :class="{ placeholder: !avatarUrl(p) }">
+                  <img v-if="avatarUrl(p)" :src="avatarUrl(p)" alt="" @error="markAvatarFailed(p)" />
+                  <img v-else class="ph" src="/assets/avatar-skull.svg" alt="" />
+                </span>
+                <span class="name">{{ p.name || "???" }}</span>
+                <PerkIcon
+                  v-if="perkId(p) || perkLevelOf(p) !== null"
+                  :perk="perkId(p) || p.perk"
+                  :level="perkLevelOf(p)"
+                  :prestige-rank="p.prestigeRank ?? 0"
+                  :size="26"
+                  :title="perkTitle(p)"
+                />
+              </component>
+              <a
+                v-if="isFriend(p) && !serverFull(srv)"
+                class="row-join"
+                :href="joinUrl(srv)"
+                @click.stop
+              >{{ t("friends.join") }}</a>
+              <span v-else-if="isFriend(p)" class="row-full">{{ t("srv.full") }}</span>
+            </div>
           </li>
         </ul>
         <p class="server-addr">
@@ -352,6 +427,15 @@ onUnmounted(() => {
             :data-tip="t('srv.copied')"
             @click="copyIp(srv)"
           >{{ srv.host }}:{{ srv.port }}</span>
+          <span
+            v-if="countryOf(srv)"
+            class="loc"
+            tabindex="0"
+            :data-tip="countryTitle(countryOf(srv))"
+            :aria-label="countryTitle(countryOf(srv))"
+          >
+            <span class="fi" :class="`fi-${countryOf(srv)}`" aria-hidden="true"></span>
+          </span>
         </p>
       </article>
     </section>
@@ -388,6 +472,14 @@ onUnmounted(() => {
         {{ t("srv.discordJoin") }}
       </a>
     </article>
+
+    <template v-if="logPreview.length">
+      <h2 class="section-title">{{ t("changelog.title") }}</h2>
+      <ChangelogList :groups="logPreview" />
+      <p v-if="logHasMore" class="sessions-more">
+        <router-link class="sessions-cta" to="/changelog">{{ t("changelog.all") }}</router-link>
+      </p>
+    </template>
 
     <!-- five newest sessions; the rest live on /sessions -->
     <template v-if="SESSIONS_PUBLIC">
@@ -438,21 +530,51 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.landing { padding-top: 14px; }
+.landing { max-width: var(--page-home); padding-top: 14px; container-type: inline-size; }
 /* Landing sections are centered. */
 .landing .section-title { justify-content: center; }
 .landing .section-title:first-of-type { margin-top: 8px; }
 .landing .empty-note { text-align: center; }
 
+/* Phone: one column. Tablet: two, so a fourth card is not left alone.
+   Desktop: four across. auto-fit lets three live servers fill the row. */
 .server-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
-  max-width: 900px;
   margin: 0 auto;
 }
+@container (min-width: 42rem) {
+  .server-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* 1188px still holds four cards. Below that, two columns.
+   Five cards use three on top and two centered below, not four plus one. */
+@container (min-width: 70rem) {
+  .server-grid {
+    grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr));
+  }
+  .server-grid.five {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .server-grid.five .server-card {
+    grid-column: span 2;
+  }
+  .server-grid.five .server-card:nth-child(4) {
+    grid-column: 2 / span 2;
+  }
+  .server-grid.five .server-card:nth-child(5) {
+    grid-column: 4 / span 2;
+  }
+}
 
-.server-card { display: flex; flex-direction: column; overflow: hidden; }
+.server-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: inline-size;
+}
 .server-card.stale .shot img { opacity: 0.55; }
 .server-card .shot {
   position: relative;
@@ -505,6 +627,10 @@ onUnmounted(() => {
   gap: 8px;
 }
 .server-card .shot .caption .map {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-display);
   font-size: 19px;
   letter-spacing: 0.04em;
@@ -512,7 +638,12 @@ onUnmounted(() => {
   color: #fff;
   text-shadow: 0 1px 4px #000;
 }
-.server-card .shot .caption .sub { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.server-card .shot .caption .sub {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 .server-meta {
   margin: 8px 10px 0;
@@ -548,6 +679,16 @@ onUnmounted(() => {
   padding: 5px 10px 3px;
   white-space: nowrap;
 }
+.server-actions .full {
+  flex: 1 1 auto;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.064em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 5px 10px 3px;
+}
 .server-actions a.join:hover,
 .server-actions a.session:hover { text-decoration: none; border-color: var(--accent-deep); color: #fff; }
 .server-actions button.plist-toggle {
@@ -560,6 +701,13 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .server-actions button.plist-toggle:hover { border-color: var(--border-bright); color: var(--text); }
+/* Four-across cards are too narrow for Join, Session and Players on one line. */
+@container (max-width: 22rem) {
+  .server-actions button.plist-toggle {
+    flex: 1 0 100%;
+    text-align: center;
+  }
+}
 .server-actions button.plist-toggle::after { content: " ▸"; color: var(--text-faint); }
 .server-card.open button.plist-toggle::after { content: " ▾"; }
 
@@ -573,6 +721,45 @@ onUnmounted(() => {
 }
 .plist li { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
 .plist li:last-child { border-bottom: 0; }
+.plist li.friend {
+  border: 1px solid #7d2023;
+  background: linear-gradient(180deg, rgba(198, 18, 23, 0.28), #12080a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.plist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.plist-row .plist-player { flex: 1; }
+.row-join {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0 8px;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+  border: 1px solid #7d2023;
+  border-radius: 4px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.row-join:hover { color: #fff; text-decoration: none; filter: brightness(1.12); }
+.row-full {
+  flex: none;
+  margin-right: 8px;
+  color: var(--text-faint);
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .plist-player {
   display: flex;
   align-items: center;
@@ -596,7 +783,7 @@ a.plist-player:hover {
   overflow: hidden;
 }
 .plist .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.plist .avatar .ph { width: auto; height: 78%; margin: 0; object-fit: contain; opacity: 0.82; }
+.plist .avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: cover; opacity: 0.82; }
 .plist .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
 .plist .name {
   flex: 1;
@@ -607,7 +794,55 @@ a.plist-player:hover {
 }
 .plist .empty { color: var(--text-faint); padding: 6px 8px; }
 
-.server-addr { margin: 8px 10px 12px; font-size: 12px; color: var(--text-dim); }
+.server-addr {
+  margin: 8px 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.server-addr .loc {
+  position: relative;
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  line-height: 0;
+  cursor: help;
+  outline: none;
+}
+.server-addr .loc .fi {
+  width: 22px;
+  height: 15px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+  background-size: cover;
+}
+.server-addr .loc::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  background: #1d1d25;
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 2;
+}
+.server-addr .loc:hover::after,
+.server-addr .loc:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
 .server-addr .lbl { margin-right: 4px; }
 .server-addr .ip { position: relative; color: var(--text); cursor: pointer; border-bottom: 1px dotted var(--border-bright); }
 .sessions-more { text-align: center; margin: 16px 0 0; }

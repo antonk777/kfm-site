@@ -20,11 +20,18 @@
   --gold-bright: #e8b53c;
   --green: #8fd16a;
   --blue: #5cc8e6;
-  /* Oswald is the single display font for every language: it has Latin,
-     Cyrillic and Vietnamese, so mixed-script text never switches families.
-     System CJK fonts cover Chinese. */
-  --font-display: "Oswald", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Arial Narrow", sans-serif;
-  --font-body: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+  /* Oswald covers Latin, Cyrillic and Vietnamese. CJK falls through to a
+     system font: Chinese by default, Japanese shapes when the page is ja. */
+  --font-cjk: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC";
+  --font-display: "Oswald", var(--font-cjk), "Arial Narrow", sans-serif;
+  --font-body: "Segoe UI", var(--font-cjk), Arial, sans-serif;
+  /* Home is wider so four server cards share one row. Other pages stay narrower. */
+  --page: 1180px;
+  --page-home: 1320px;
+}
+
+html[lang="ja"] {
+  --font-cjk: "Yu Gothic UI", "Yu Gothic", "Meiryo", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC";
 }
 
 * { box-sizing: border-box; }
@@ -89,7 +96,7 @@ a:hover { text-decoration: underline; }
 /* ---------- primitives shared by the views ---------- */
 
 .page {
-  max-width: 1180px;
+  max-width: var(--page);
   margin: 0 auto;
   padding: 26px 20px 60px;
 }

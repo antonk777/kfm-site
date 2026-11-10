@@ -1,0 +1,61 @@
+# Local Umami. Interpolate with: docker compose --env-file /etc/kfm-umami.env up -d
+# Dashboard is only on 127.0.0.1:9477. Caddy exposes /kf.js and /api/kf on the site.
+# Keep that port in step with Caddyfile and up.sh.
+name: kfm-umami
+
+services:
+  umami:
+    image: ghcr.io/umami-software/umami:latest
+    ports:
+      - "127.0.0.1:9477:3000"
+    environment:
+      DATABASE_URL: postgresql://umami:${POSTGRES_PASSWORD}@db:5432/umami
+      APP_SECRET: ${APP_SECRET}
+      TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY}
+      # No telemetry, no update check, no favicon lookups off this machine.
+      DISABLE_TELEMETRY: "1"
+      DISABLE_UPDATES: "1"
+      PRIVATE_MODE: "1"
+      # Public names. /api/send stays inside the container; the browser uses /api/kf.
+      TRACKER_SCRIPT_NAME: kf.js
+      COLLECT_API_ENDPOINT: /api/kf
+      # Caddy is the only proxy. The published port's peer is the docker bridge.
+      TRUSTED_PROXIES: "loopback,private"
+    depends_on:
+      db:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - umami-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  umami-db-data:

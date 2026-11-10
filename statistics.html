@@ -120,13 +120,17 @@ th{color:#888;font-weight:600}
   var mapList = [];
   var adminBusy = false;
 
-  var ADMIN_SERVERS = ["meatgrinder", "bloodbath"];
+  var ADMIN_SERVERS = ["meatgrinder", "bloodbath", "dismember", "sacrifice", "condemned"];
   var SERVER_LABELS = {
     "": "Все",
     meatgrinder: "Meat Grinder",
-    bloodbath: "Bloodbath"
+    bloodbath: "Bloodbath",
+    dismember: "Dismember",
+    suicidal: "Dismember",
+    sacrifice: "Sacrifice",
+    condemned: "Condemned"
   };
-  var SERVER_ALIASES = { normal: "meatgrinder", vote: "bloodbath", hoe: "bloodbath" };
+  var SERVER_ALIASES = { normal: "meatgrinder", vote: "bloodbath", hoe: "bloodbath", suicidal: "dismember" };
   function canonServer(name) {
     var k = String(name || "").toLowerCase();
     return SERVER_ALIASES[k] || k;
@@ -373,13 +377,14 @@ th{color:#888;font-weight:600}
     return chart;
   }
 
-  function updateLoadChart(L) {
+  function updateLoadChart(L, canvasId) {
     var labels = (L.ts || []).map(fmtClock);
     var net = L.net_mbps || [];
     var mxNet = 1;
     net.forEach(function (v) {
       if (v != null && !isNaN(v)) mxNet = Math.max(mxNet, v);
     });
+    var hasTicks = (L.tick_ms || []).some(function (v) { return v != null; });
     var datasets = [
       lineDataset("CPU %", "#5ce6b8", L.cpu || []),
       lineDataset(
@@ -408,15 +413,15 @@ th{color:#888;font-weight:600}
           if (net[i] != null) lines.push("Сеть: " + net[i] + " Мбит/с");
           if (L.scope === "process" && L.mem_mb && L.mem_mb[i] != null)
             lines.push("RSS: " + L.mem_mb[i] + " МБ");
-          if (L.scope === "process" && L.tick_ms && L.tick_ms[i] != null)
+          if (L.tick_ms && L.tick_ms[i] != null)
             lines.push("Тик (окно): " + Math.round(L.tick_ms[i]) + " мс");
-          if (L.scope === "process" && L.peak_tick_ms && L.peak_tick_ms[i] != null)
+          if (L.peak_tick_ms && L.peak_tick_ms[i] != null)
             lines.push("Пик 5 мин: " + Math.round(L.peak_tick_ms[i]) + " мс");
           return lines;
         },
       },
     };
-    if (L.scope === "process") {
+    if (hasTicks) {
       datasets.push(
         lineDataset("Тик мс", "#e6a05c", L.tick_ms || [], {
           yAxisID: "y1",
@@ -438,7 +443,7 @@ th{color:#888;font-weight:600}
       opts.y1Title = "Тик, мс";
       opts.formatY1 = function (v) { return Math.round(v) + " мс"; };
     }
-    return makeLineChart("cLoad", labels, datasets, opts);
+    return makeLineChart(canvasId || "cLoad", labels, datasets, opts);
   }
 
   function api(path, opts) {
@@ -1055,9 +1060,19 @@ th{color:#888;font-weight:600}
         fmtDur(D.avg_playtime_sec[i]) +
         "</td></tr>";
     }
+    var tabs = D.serverTabs || [];
+    var tabInfo = null;
+    for (var ti = 0; ti < tabs.length; ti++) {
+      if ((tabs[ti].name || "") === activeServer) tabInfo = tabs[ti];
+    }
+    var remoteTab = !!(tabInfo && tabInfo.remote);
+    var singleLabel = activeServer && remoteTab ? (tabInfo && tabInfo.vps) || "" : "";
     var filterNote = activeServer
-      ? "Сервер: <b>" + esc(tabLabel(activeServer)) + "</b>. Нагрузка — процесс этого слота. "
-      : "Уникальные — разные люди на всех серверах. Пик — сумма пиков серверов. Нагрузка — весь VPS. ";
+      ? "Сервер: <b>" +
+        esc(tabLabel(activeServer)) +
+        "</b>. Нагрузка — " +
+        (remoteTab ? "весь VPS этого сервера. " : "процесс этого слота. ")
+      : "Уникальные — разные люди на всех серверах. Пик — сумма пиков серверов. ";
     var serversBlock = activeServer
       ? ""
       : "<div><h2>Серверы</h2><div class='box'><div class='chart-wrap pie'><canvas id='cServers'></canvas></div></div></div>";
@@ -1094,23 +1109,13 @@ th{color:#888;font-weight:600}
       D.days.length +
       "</b></div>" +
       "</div>" +
-      "<h2 id='loadTitle'>Нагрузка VPS</h2>" +
-      "<div class='cards' id='loadCards'>" +
-      "<div class='card load'><span id='loadCpuLabel'>CPU</span><b id='loadCpu'>—</b></div>" +
-      "<div class='card load'><span id='loadMemLabel'>Память</span><b id='loadMem'>—</b></div>" +
-      "<div class='card load'><span id='loadNetLabel'>Сеть</span><b id='loadNet'>—</b></div>" +
-      "<div class='card tick' id='loadTickCard' style='display:none'><span>Тик окна</span><b id='loadTick'>—</b></div>" +
-      "<div class='card tick' id='loadSessTickCard' style='display:none'><span>Пик тика (5 мин)</span><b id='loadSessTick'>—</b></div>" +
-      "</div>" +
-      "<div class='box'><div class='chart-wrap'><canvas id='cLoad'></canvas></div>" +
-      "<p class='chart-hint'>Колёсико — зум · перетаскивание — сдвиг · двойной клик — сброс · наведение — точные значения</p></div>" +
-      "<p class='sub' id='loadHint'>Realtime каждые 2 с.</p>" +
+      (activeServer ? loadSectionHtml(null, singleLabel) : "") +
       "<h2>Пик и уникальные игроки</h2>" +
       "<div class='box'><div class='chart-wrap'><canvas id='cPeak'></canvas></div>" +
       "<p class='chart-hint'>Зум / сдвиг / двойной клик — сброс</p></div>" +
       "<h2>Скачивания Companion</h2>" +
       "<div class='box'><div class='chart-wrap'><canvas id='cDl'></canvas></div></div>" +
-      "<p class='sub'>Успешные ответы Caddy на /download и KFM-Companion*.exe (из access-лога).</p>" +
+      "<p class='sub'>Каждое скачивание /download и KFM-Companion*.exe пишется в базу.</p>" +
       "<h2>Удержание (день 1 / день 7)</h2>" +
       "<div class='box'><div class='chart-wrap'><canvas id='cRet'></canvas></div></div>" +
       "<p class='sub'>Доля игроков, которые вернулись через 1 или 7 календарных дней.</p>" +
@@ -1190,6 +1195,118 @@ th{color:#888;font-weight:600}
     startLoadMonitor();
   }
 
+  function loadEl(base, idx) {
+    return base + (idx == null || idx === "" ? "" : "-" + idx);
+  }
+
+  function vpsTitle(label) {
+    return label ? "Нагрузка VPS — " + label : "Нагрузка VPS";
+  }
+
+  function loadSectionHtml(hosts, singleLabel) {
+    var multi = !!(hosts && hosts.length > 1);
+    var list = multi ? hosts : [{ label: singleLabel || "" }];
+    var html = "";
+    for (var i = 0; i < list.length; i++) {
+      var suf = multi ? "-" + i : "";
+      var title = vpsTitle(list[i].label || "");
+      html +=
+        "<h2 id='loadTitle" + suf + "'>" + esc(title) + "</h2>" +
+        "<div class='cards' id='loadCards" + suf + "'>" +
+        "<div class='card load'><span id='loadCpuLabel" + suf + "'>CPU</span><b id='loadCpu" + suf + "'>—</b></div>" +
+        "<div class='card load'><span id='loadMemLabel" + suf + "'>Память</span><b id='loadMem" + suf + "'>—</b></div>" +
+        "<div class='card load'><span id='loadNetLabel" + suf + "'>Сеть</span><b id='loadNet" + suf + "'>—</b></div>";
+      if (!multi) {
+        html +=
+          "<div class='card tick' id='loadTickCard' style='display:none'><span>Тик окна</span><b id='loadTick'>—</b></div>" +
+          "<div class='card tick' id='loadSessTickCard' style='display:none'><span>Пик тика (5 мин)</span><b id='loadSessTick'>—</b></div>";
+      }
+      html +=
+        "</div>" +
+        "<div class='box'><div class='chart-wrap'><canvas id='cLoad" + suf + "'></canvas></div>" +
+        "<p class='chart-hint'>Колёсико — зум · перетаскивание — сдвиг · двойной клик — сброс · наведение — точные значения</p></div>" +
+        "<p class='sub' id='loadHint" + suf + "'>Realtime каждые 2 с.</p>";
+    }
+    return html;
+  }
+
+  function applyLoad(idx, L) {
+    var now = L.now || {};
+    var elCpu = document.getElementById(loadEl("loadCpu", idx));
+    var elMem = document.getElementById(loadEl("loadMem", idx));
+    var elNet = document.getElementById(loadEl("loadNet", idx));
+    var elTick = document.getElementById(loadEl("loadTick", idx));
+    var elSess = document.getElementById(loadEl("loadSessTick", idx));
+    var cardTick = document.getElementById(loadEl("loadTickCard", idx));
+    var cardSess = document.getElementById(loadEl("loadSessTickCard", idx));
+    var elTitle = document.getElementById(loadEl("loadTitle", idx));
+    var elHint = document.getElementById(loadEl("loadHint", idx));
+    var elMemLabel = document.getElementById(loadEl("loadMemLabel", idx));
+    var canvas = document.getElementById(loadEl("cLoad", idx));
+    if (!canvas) return;
+    if (elTitle) {
+      elTitle.textContent =
+        L.scope === "process"
+          ? "Нагрузка процесса " + tabLabel(activeServer || L.server)
+          : vpsTitle(L.label || "");
+    }
+    if (elHint) {
+      if (L.scope === "process") {
+        elHint.textContent =
+          "Realtime каждые 2 с: CPU/RSS/сеть процесса + тик с live-пуша (окно ~5 с) и худший тик текущей карты.";
+      } else if (!L.now && (L.ts || []).length) {
+        elHint.textContent = "Нет свежих данных с этого VPS.";
+      } else if (!L.now) {
+        elHint.textContent = "Ожидание данных с VPS…";
+      } else {
+        elHint.textContent =
+          "Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx) всего хоста. Окно ~10 мин.";
+      }
+    }
+    if (elMemLabel)
+      elMemLabel.textContent = L.scope === "process" ? "Память RSS" : "Память";
+    if (elCpu) elCpu.textContent = now.cpu != null ? now.cpu + "%" : "—";
+    if (elMem) {
+      if (L.scope === "process" && now.mem_mb != null) {
+        elMem.textContent =
+          now.mem_mb + " МБ" + (now.mem != null ? " (" + now.mem + "%)" : "");
+      } else {
+        elMem.textContent = now.mem != null ? now.mem + "%" : "—";
+      }
+    }
+    if (elNet)
+      elNet.textContent = now.net_mbps != null ? now.net_mbps + " Мбит/с" : "—";
+
+    var liveTick = L.live && L.live.worstTick != null ? L.live.worstTick : null;
+    var ticks = L.tick_ms || [];
+    var lastTick = null;
+    for (var i = ticks.length - 1; i >= 0; i--) {
+      if (ticks[i] != null) {
+        lastTick = ticks[i];
+        break;
+      }
+    }
+    if (liveTick != null && liveTick >= 0) lastTick = liveTick;
+    var showTick = lastTick != null && lastTick >= 0 && (L.scope === "process" || L.server);
+    if (cardTick && elTick) {
+      if (showTick) {
+        cardTick.style.display = "";
+        elTick.textContent = Math.round(lastTick) + " мс";
+      } else {
+        cardTick.style.display = "none";
+      }
+    }
+    if (cardSess && elSess) {
+      if ((L.scope === "process" || L.server) && L.peakTick >= 0) {
+        cardSess.style.display = "";
+        elSess.textContent = L.peakTick + " мс";
+      } else {
+        cardSess.style.display = "none";
+      }
+    }
+    updateLoadChart(L, canvas.id);
+  }
+
   function refreshLoad() {
     var q = activeServer
       ? "/api/stats/load?server=" + encodeURIComponent(activeServer)
@@ -1204,74 +1321,10 @@ th{color:#888;font-weight:600}
         return r.json();
       })
       .then(function (L) {
-        var now = L.now || {};
-        var elCpu = document.getElementById("loadCpu");
-        var elMem = document.getElementById("loadMem");
-        var elNet = document.getElementById("loadNet");
-        var elTick = document.getElementById("loadTick");
-        var elSess = document.getElementById("loadSessTick");
-        var cardTick = document.getElementById("loadTickCard");
-        var cardSess = document.getElementById("loadSessTickCard");
-        var elTitle = document.getElementById("loadTitle");
-        var elHint = document.getElementById("loadHint");
-        var elMemLabel = document.getElementById("loadMemLabel");
-        if (!document.getElementById("cLoad")) return;
         updateLiveUI(L);
-        if (elTitle) {
-          elTitle.textContent =
-            L.scope === "process"
-              ? "Нагрузка процесса " + tabLabel(activeServer)
-              : "Нагрузка VPS";
-        }
-        if (elHint) {
-          elHint.textContent =
-            L.scope === "process"
-              ? "Realtime каждые 2 с: CPU/RSS/сеть процесса + тик с live-пуша (окно ~5 с) и худший тик текущей карты."
-              : "Realtime каждые 2 с: CPU %, память %, сеть Мбит/с (rx+tx) всего хоста. Окно ~10 мин.";
-        }
-        if (elMemLabel)
-          elMemLabel.textContent = L.scope === "process" ? "Память RSS" : "Память";
-        if (elCpu) elCpu.textContent = now.cpu != null ? now.cpu + "%" : "—";
-        if (elMem) {
-          if (L.scope === "process" && now.mem_mb != null) {
-            elMem.textContent =
-              now.mem_mb + " МБ" + (now.mem != null ? " (" + now.mem + "%)" : "");
-          } else {
-            elMem.textContent = now.mem != null ? now.mem + "%" : "—";
-          }
-        }
-        if (elNet)
-          elNet.textContent =
-            now.net_mbps != null ? now.net_mbps + " Мбит/с" : "—";
-
-        var liveTick =
-          L.live && L.live.worstTick != null ? L.live.worstTick : null;
-        var ticks = L.tick_ms || [];
-        var lastTick = null;
-        for (var i = ticks.length - 1; i >= 0; i--) {
-          if (ticks[i] != null) {
-            lastTick = ticks[i];
-            break;
-          }
-        }
-        if (liveTick != null && liveTick >= 0) lastTick = liveTick;
-        if (cardTick && elTick) {
-          if (L.scope === "process" && lastTick != null && lastTick >= 0) {
-            cardTick.style.display = "";
-            elTick.textContent = Math.round(lastTick) + " мс";
-          } else {
-            cardTick.style.display = "none";
-          }
-        }
-        if (cardSess && elSess) {
-          if (L.scope === "process" && L.peakTick >= 0) {
-            cardSess.style.display = "";
-            elSess.textContent = L.peakTick + " мс";
-          } else {
-            cardSess.style.display = "none";
-          }
-        }
-        updateLoadChart(L);
+        if (!activeServer) return;
+        if (!document.getElementById("cLoad")) return;
+        applyLoad(null, L);
       })
       .catch(function () {});
   }

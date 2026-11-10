@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { fetchSession, type SessionDetailInfo, type SessionDetailPlayer } from "../api";
-import { i18n, MESSAGES, t } from "../i18n";
-import { SESSION_STATUS_SINCE, fmtDate, prettyMap } from "../lib/format";
-import DifficultyLabel from "../components/DifficultyLabel.vue";
-import PerkIcon from "../components/PerkIcon.vue";
-import SessionCharts from "../components/SessionCharts.vue";
+import { fetchSession, type SessionDetailInfo, type SessionDetailPlayer } from "~/api";
+import { i18n, MESSAGES, t } from "~/i18n";
+import { SESSION_STATUS_SINCE, fmtDate, prettyMap } from "~/lib/format";
+import DifficultyLabel from "~/components/DifficultyLabel.vue";
+import PerkIcon from "~/components/PerkIcon.vue";
+import SessionCharts from "~/components/SessionCharts.vue";
+import { setPageTitle } from "~/title";
 
 const props = defineProps<{ id: string }>();
 
@@ -42,6 +43,18 @@ watch(() => props.id, () => {
   avatarFailed.value = {};
   void load();
 });
+
+watch(
+  () => {
+    if (loading.value) return null;
+    if (failed.value) return { key: "error" };
+    if (!data.value?.found) return { key: "sessions.notFound" };
+    const map = prettyMap(data.value.mapPretty || data.value.map);
+    return map === "—" ? null : map;
+  },
+  (name) => setPageTitle(name),
+  { immediate: true },
+);
 
 function onVisible(): void {
   if (document.hidden) return;
@@ -814,7 +827,7 @@ function badgeHint(key: string): string {
   flex: none;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.avatar .ph { width: auto; height: 78%; margin: 0; object-fit: contain; opacity: 0.82; }
+.avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: cover; opacity: 0.82; }
 .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
 .avatar.sm { width: 36px; height: 36px; }
 .skin {

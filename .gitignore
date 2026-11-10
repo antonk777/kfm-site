@@ -5,6 +5,7 @@ KFM-Companion-*.exe
 KFM-Launcher*.exe
 release.json
 kfm-site.env
+kfm-umami.env
 .env
 *.log
 *.sqlite

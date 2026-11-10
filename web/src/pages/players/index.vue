@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { fetchTopPlayers, type TopPlayerEntry } from "../api";
-import { fmtNum } from "../lib/format";
-import { t } from "../i18n";
+import { fetchTopPlayers, type TopPlayerEntry } from "~/api";
+import { fmtNum } from "~/lib/format";
+import { friendsById, type Friend } from "~/lib/friends";
+import { t } from "~/i18n";
 
 const rows = ref<TopPlayerEntry[]>([]);
 const loading = ref(true);
@@ -32,6 +33,11 @@ function avatarUrl(r: TopPlayerEntry): string {
 function onAvatarError(r: TopPlayerEntry): void {
   avatarFailed.value = new Set(avatarFailed.value).add(r.id);
 }
+
+function liveFriend(r: TopPlayerEntry): Friend | null {
+  const friend = friendsById.value.get(r.steamId);
+  return friend?.playing ? friend : null;
+}
 </script>
 
 <template>
@@ -50,7 +56,12 @@ function onAvatarError(r: TopPlayerEntry): void {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.id" @click="$router.push(linkFor(r))">
+          <tr
+            v-for="r in rows"
+            :key="r.id"
+            :class="{ 'friend-on': liveFriend(r) }"
+            @click="$router.push(linkFor(r))"
+          >
             <td class="top-rank">{{ r.rank }}</td>
             <td>
               <div class="top-cell">
@@ -68,6 +79,16 @@ function onAvatarError(r: TopPlayerEntry): void {
                 <span class="top-name">{{ r.name }}</span>
                 <span v-if="r.admin" class="top-admin">{{ t("hero.admin") }}</span>
                 <span v-if="r.veteran" class="top-veteran" :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
+                <template v-if="liveFriend(r)">
+                  <span class="top-where">{{ t("friends.playingOn", { server: liveFriend(r)?.server || "" }) }}</span>
+                  <a
+                    v-if="!liveFriend(r)?.full && (liveFriend(r)?.join || '').startsWith('steam://run/')"
+                    class="top-join"
+                    :href="liveFriend(r)?.join || ''"
+                    @click.stop
+                  >{{ t("friends.join") }}</a>
+                  <span v-else-if="liveFriend(r)?.full" class="top-full">{{ t("srv.full") }}</span>
+                </template>
               </div>
             </td>
             <td class="top-score">{{ fmtNum(r.score) }}</td>
@@ -99,6 +120,21 @@ function onAvatarError(r: TopPlayerEntry): void {
 }
 .top-table tbody tr { cursor: pointer; }
 .top-table tbody tr:hover { background: rgba(198, 18, 23, 0.07); }
+.top-table tbody tr.friend-on td {
+  border-top: 1px solid #7d2023;
+  border-bottom: 1px solid #3d1012;
+  background: linear-gradient(180deg, rgba(198, 18, 23, 0.26), #12080a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.top-table tbody tr.friend-on td:first-child {
+  box-shadow: inset 1px 0 0 #7d2023, inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.top-table tbody tr.friend-on td:last-child {
+  box-shadow: inset -1px 0 0 #7d2023, inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.top-table tbody tr.friend-on:hover td {
+  background: linear-gradient(180deg, rgba(198, 18, 23, 0.34), #1a0a0c);
+}
 .top-rank { font-family: var(--font-display); font-size: 20px; color: var(--accent-bright); width: 56px; }
 .top-cell { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
 .top-avatar {
@@ -118,9 +154,9 @@ function onAvatarError(r: TopPlayerEntry): void {
   background: radial-gradient(circle at 50% 40%, #1c1c24, #0c0c10);
 }
 .top-avatar-empty img {
-  width: auto;
-  height: 72%;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
   opacity: 0.82;
 }
 .top-name { color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -144,6 +180,40 @@ function onAvatarError(r: TopPlayerEntry): void {
   padding: 1px 6px;
   text-transform: uppercase;
 }
+.top-where {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+}
+.top-join {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+  border: 1px solid #7d2023;
+  border-radius: 4px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.top-join:hover { color: #fff; text-decoration: none; filter: brightness(1.12); }
+.top-full {
+  flex: none;
+  color: var(--text-faint);
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .top-score { font-family: var(--font-display); font-size: 20px; color: #fff; }
 
 @media (max-width: 640px) {
@@ -156,6 +226,8 @@ function onAvatarError(r: TopPlayerEntry): void {
   .top-avatar { width: 30px; height: 30px; }
   .top-name { font-size: 13px; flex: 1 1 auto; }
   .top-admin, .top-veteran { font-size: 9px; letter-spacing: 0.048em; padding: 0 4px; }
+  .top-where { flex: 1 1 100%; margin-left: 38px; font-size: 12px; }
+  .top-join { height: 22px; font-size: 12px; }
   .top-score { font-size: 16px; }
   .top-table td:nth-child(4) { font-size: 12.5px; }
 }
