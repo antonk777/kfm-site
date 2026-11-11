@@ -323,32 +323,29 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
               <div class="meta-line">
                 <template v-if="data.clan">
                   <span :title="data.clan.leader ? t('hero.clanLeader') : undefined">{{ data.clan.name }}</span>
-                  <span class="sep">•</span>
+                  <span class="sep">·</span>
                 </template>
                 <template v-if="data.admin">
-                  {{ t("hero.admin") }}
-                  <span class="sep">•</span>
+                  <span>{{ t("hero.admin") }}</span>
+                  <span class="sep">·</span>
                 </template>
                 <template v-if="data.veteran">
                   <span :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
-                  <span class="sep">•</span>
+                  <span class="sep">·</span>
                 </template>
                 <template v-if="data.ban">
-                  {{ t("hero.banned") }}
-                  <span class="sep">•</span>
+                  <span>{{ t("hero.banned") }}</span>
+                  <span class="sep">·</span>
                 </template>
                 <template v-if="data.country">
-                  <span class="fi" :class="`fi-${data.country.toLowerCase()}`"></span>
-                  {{ countryName(data.country, i18n.locale) }}
-                  <span class="sep">•</span>
+                  <span><span class="fi" :class="`fi-${data.country.toLowerCase()}`"></span> {{ countryName(data.country, i18n.locale) }}</span>
+                  <span class="sep">·</span>
                 </template>
-                <b>{{ t("hero.id") }}</b> {{ data.id }}
-                <span class="sep">•</span>
-                <b>{{ t("hero.playsSince") }}</b>
-                {{ data.dateCreated ? fmtDateOnly(data.dateCreated) : "—" }}
-                <span class="sep">•</span>
-                <b>{{ t("hero.lastSeen") }}</b>
-                {{ data.lastJoined ? fmtDate(data.lastJoined) : t("hero.never") }}
+                <span><b>{{ t("hero.id") }}</b> {{ data.id }}</span>
+                <span class="sep">·</span>
+                <span><b>{{ t("hero.playsSince") }}</b> {{ data.dateCreated ? fmtDateOnly(data.dateCreated) : "—" }}</span>
+                <span class="sep">·</span>
+                <span><b>{{ t("hero.lastSeen") }}</b> {{ data.lastJoined ? fmtDate(data.lastJoined) : t("hero.never") }}</span>
               </div>
               <div v-if="data.ban" class="meta-line" style="color: #c86a6a; margin-top: 4px">
                 {{ data.ban.reason || t("hero.banned") }}
@@ -729,7 +726,7 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   width: 18px;
   height: 13px;
   margin-right: 6px;
-  vertical-align: -2px;
+  vertical-align: 0;
 }
 
 .profile-actions {
