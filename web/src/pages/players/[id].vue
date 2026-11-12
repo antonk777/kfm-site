@@ -44,6 +44,9 @@ async function load() {
       const resolved = await resolveVanity(id);
       if (!resolved) return; // unknown custom URL -> "not found"
       steamId = resolved;
+      // Same moment the profile request starts. A numeric id is polled from
+      // the route below, while this await is still in flight.
+      void pollLive(steamId);
     }
     data.value = await fetchPlayer(steamId);
     // Canonical URL: redirect SteamID64 / old KFM-id pages to the player's
@@ -133,6 +136,14 @@ interface LiveServer {
 
 const live = ref<LiveSeat | null>(null);
 let liveTimer = 0;
+let liveGen = 0;
+
+function playingSteamId(): string {
+  const fromProfile = data.value?.steamId || "";
+  if (/^\d{16,20}$/.test(fromProfile)) return fromProfile;
+  const fromRoute = playerId.value;
+  return /^\d{16,20}$/.test(fromRoute) ? fromRoute : "";
+}
 
 function seatFor(servers: LiveServer[], steamId: string): LiveSeat | null {
   for (const srv of servers) {
@@ -158,21 +169,32 @@ function seatFor(servers: LiveServer[], steamId: string): LiveSeat | null {
   return null;
 }
 
-async function pollLive(): Promise<void> {
-  const steamId = data.value?.steamId || "";
-  if (!/^\d{16,20}$/.test(steamId)) {
-    live.value = null;
-    return;
-  }
+async function pollLive(explicit?: string): Promise<void> {
+  const steamId = explicit && /^\d{16,20}$/.test(explicit) ? explicit : playingSteamId();
+  if (!/^\d{16,20}$/.test(steamId)) return;
+  const gen = ++liveGen;
   try {
     const res = await fetch("/api/stats/servers", { cache: "no-store" });
+    if (gen !== liveGen) return;
     if (!res.ok) return;
     const payload = (await res.json()) as { servers?: LiveServer[] };
+    if (gen !== liveGen) return;
     live.value = seatFor(payload.servers || [], steamId);
   } catch {
     // Keep the last seat until the next poll.
   }
 }
+
+// The route id is known before the profile payload. Start then, so Join is
+// already there when the page finishes loading instead of on the first tick.
+watch(playingSteamId, (steamId) => {
+  if (!steamId) {
+    liveGen += 1;
+    live.value = null;
+    return;
+  }
+  void pollLive(steamId);
+}, { immediate: true });
 
 const liveWave = computed(() => {
   const seat = live.value;
@@ -189,6 +211,7 @@ watch(() => live.value?.mapFile, () => {
 });
 
 onMounted(() => {
+  void pollLive();
   liveTimer = window.setInterval(() => void pollLive(), 10000);
 });
 onBeforeUnmount(() => window.clearInterval(liveTimer));
@@ -326,11 +349,15 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                   <span class="sep">·</span>
                 </template>
                 <template v-if="data.admin">
-                  <span>{{ t("hero.admin") }}</span>
-                  <span class="sep">·</span>
+                  <span class="badge admin">{{ t("hero.admin") }}</span>
                 </template>
                 <template v-if="data.veteran">
-                  <span :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
+                  <span class="badge veteran" tabindex="0">
+                    {{ t("hero.veteran") }}
+                    <span class="badge-tip" role="tooltip">{{ t("hero.veteranHint") }}</span>
+                  </span>
+                </template>
+                <template v-if="data.admin || data.veteran">
                   <span class="sep">·</span>
                 </template>
                 <template v-if="data.ban">
@@ -727,6 +754,61 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   height: 13px;
   margin-right: 6px;
   vertical-align: 0;
+}
+.meta-line .badge {
+  display: inline-block;
+  vertical-align: 1px;
+  margin-right: 5px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+  padding: 1px 6px 0;
+  border: 1px solid;
+  text-transform: uppercase;
+}
+.meta-line .badge.admin {
+  color: #ff8a8d;
+  border-color: #7d2023;
+  background: rgba(198, 18, 23, 0.22);
+}
+.meta-line .badge.veteran {
+  position: relative;
+  color: var(--gold-bright);
+  border-color: #7d6118;
+  background: rgba(199, 139, 18, 0.14);
+  cursor: help;
+}
+.meta-line .badge.veteran .badge-tip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 6;
+  width: max-content;
+  max-width: min(280px, 70vw);
+  padding: 8px 10px 7px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+  text-align: left;
+  color: var(--text);
+  background: #1a1a22;
+  border: 1px solid #7d6118;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+}
+.meta-line .badge.veteran:hover .badge-tip,
+.meta-line .badge.veteran:focus-visible .badge-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
 }
 
 .profile-actions {

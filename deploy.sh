@@ -64,47 +64,28 @@ if id caddy >/dev/null 2>&1; then
   chown -R caddy:caddy "$(dirname "${SITE_LOG}")"
 fi
 
-# Public root is the Vue build (web/dist).
-# Prefer a dist already present (deploy-site.py ships one). Otherwise build here.
-DIST_DIR="${SCRIPT_DIR}/web/dist"
-if [ ! -f "${DIST_DIR}/index.html" ]; then
+# Public pages are the Nuxt server. Map previews stay as files next to it.
+# Prefer an output already present (deploy-site.py ships one). Otherwise build here.
+OUT_ENTRY="${SCRIPT_DIR}/web/.output/server/index.mjs"
+if [ ! -f "${OUT_ENTRY}" ]; then
   if [ ! -f "${SCRIPT_DIR}/web/package.json" ]; then
-    echo "Missing web/package.json and web/dist; cannot publish the site." >&2
+    echo "Missing web/package.json and web/.output; cannot publish the site." >&2
     exit 1
   fi
   if ! command -v npm >/dev/null 2>&1; then
-    echo "==> install npm (Vue build)"
+    echo "==> install npm (Nuxt build)"
     apt-get update -y
     apt-get install -y --no-install-recommends npm
   fi
-  echo "==> build Vue site (web/)"
+  echo "==> build Nuxt site (web/)"
   if [ ! -d "${SCRIPT_DIR}/web/node_modules" ]; then
     (cd "${SCRIPT_DIR}/web" && npm ci)
   fi
   (cd "${SCRIPT_DIR}/web" && npm run build)
 fi
-if [ ! -f "${DIST_DIR}/index.html" ]; then
-  echo "web/dist/index.html missing after build" >&2
+if [ ! -f "${OUT_ENTRY}" ]; then
+  echo "web/.output/server/index.mjs missing after build" >&2
   exit 1
-fi
-
-# Install every file from dist/, then map previews. Prune stale hashed assets.
-while IFS= read -r -d '' f; do
-  rel="${f#"${DIST_DIR}"/}"
-  install -D -m 644 "$f" "${SITE_ROOT}/${rel}"
-done < <(find "${DIST_DIR}" -type f -print0 | sort -z)
-if [ -d "${SITE_ROOT}/assets" ]; then
-  while IFS= read -r -d '' f; do
-    rel="${f#"${SITE_ROOT}"/}"
-    if [ ! -f "${DIST_DIR}/${rel}" ]; then
-      rm -f "$f"
-    fi
-  done < <(find "${SITE_ROOT}/assets" -type f -print0)
-  find "${SITE_ROOT}/assets" -type d -empty -delete 2>/dev/null || true
-fi
-# Legacy landing put the logo at site root; Vue serves /assets/kf-maniacs-logo.svg.
-if [ -f "${SITE_ROOT}/kf-maniacs-logo.svg" ] && [ ! -f "${DIST_DIR}/kf-maniacs-logo.svg" ]; then
-  rm -f "${SITE_ROOT}/kf-maniacs-logo.svg"
 fi
 mkdir -p "${SITE_ROOT}/maps"
 for f in "${SCRIPT_DIR}"/maps/*.jpg; do
@@ -152,11 +133,14 @@ if ! python3 -c "import cryptography" >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends python3-cryptography
 fi
 
-echo "==> stats API (secret /statistics/)"
+echo "==> stats API (/statistics/ is the Nuxt admin page)"
 install -m 644 "${SCRIPT_DIR}/systemd/kfm-stats.service" /etc/systemd/system/kfm-stats.service
+install -m 644 "${SCRIPT_DIR}/systemd/kfm-web.service" /etc/systemd/system/kfm-web.service
 systemctl daemon-reload
 systemctl enable --now kfm-stats.service
 systemctl restart kfm-stats.service
+systemctl enable --now kfm-web.service
+systemctl restart kfm-web.service
 
 echo "==> validate + reload Caddy"
 caddy validate --config /etc/caddy/Caddyfile
@@ -182,4 +166,4 @@ echo "    ip:    http://${SITE_IP}/"
 echo "    file:  ${SITE_ROOT}/release.json"
 echo "    dl:    https://${SITE_DOMAIN}/download"
 echo "    logs:  ${SITE_LOG}"
-echo "    charts: https://${SITE_DOMAIN}/statistics/ (unlisted)"
+echo "    charts: https://${SITE_DOMAIN}/statistics/ (database admins)"

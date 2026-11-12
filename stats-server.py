@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""KF-Maniacs secret statistics API + /statistics/ charts.
+"""KF-Maniacs statistics API.
+
+The charts page is the Nuxt route /statistics/. It is shown only to a Steam
+account that is logged in and has players.admin set (a database admin).
 
 Uses the same MariaDB as perkhost (kfmaniacs). Tables:
   site_map_sessions      — one row per map play
@@ -9,7 +12,7 @@ Uses the same MariaDB as perkhost (kfmaniacs). Tables:
   site_player_map_clears — per-player per-map clear counts
 
 Listens on 127.0.0.1:STATS_PORT (default 8765) for both HTTP and UDP.
-Caddy reverse-proxies /statistics* and /api/stats*. Game sends UDP form bodies
+Caddy reverse-proxies /api/stats*. /statistics is the Nuxt page. Game sends UDP form bodies
 (UE2 TcpLink HTTP was dropping sessions on leave/map travel).
 
 Env (merge /etc/kfm-site.env + /home/kfserver/.kfm-save.env):
@@ -51,7 +54,6 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse
 HOST = os.environ.get("STATS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STATS_PORT", "8765"))
 DAYS = max(30, int(os.environ.get("STATS_DAYS", "180")))
-HTML_PATH = Path(__file__).with_name("statistics.html")
 LOCK = threading.RLock()
 # Public companion URLs. /download is the stable name; the versioned exe is
 # what the landing page links to.
@@ -1023,7 +1025,11 @@ def _peak_tick_for(server: str) -> int:
 
 
 def _parse_live_players(raw: str) -> list[dict[str, Any]]:
-    """players=name|perkIdx|perk|steam,name2|..."""
+    """players=id|perkIdx|perk|steam,id2|...
+
+    The first field is the account id when the game knows one, otherwise the
+    nick (a player not in the database yet, or an older build).
+    """
     out: list[dict[str, Any]] = []
     if not raw:
         return out
@@ -1406,6 +1412,67 @@ def _perk_index_from_name(name: Any) -> int:
     }.get(key, -1)
 
 
+# Live name is players.id (a few digits). A Steam id is 17 digits and lives in
+# its own field. A nick from an older build, or a player with no account yet,
+# does not match.
+_ACCOUNT_ID_RE = re.compile(r"^[1-9]\d{0,9}$")
+
+
+# Same cut as the profile: an account created before the 2026 relaunch.
+_VETERAN_BEFORE = 1767225600
+
+
+def _attach_public_account_names(con, servers: list[dict[str, Any]]) -> None:
+    """Fill the site monitor from the account id.
+
+    The in-game browser never goes through here. The live push carries the
+    account id plus the perk in hand. Everything else public — nick, Steam id,
+    country, clan, veteran — comes from `players`. Perk level is attached
+    afterwards and needs the Steam id this fills in. An unknown id is left as
+    the digits.
+    """
+    pending: list[tuple[dict[str, Any], int]] = []
+    for srv in servers:
+        for p in srv.get("players") or []:
+            raw = str(p.get("name") or "").strip()
+            if _ACCOUNT_ID_RE.fullmatch(raw):
+                pending.append((p, int(raw)))
+    if not pending:
+        return
+    ids = list({account_id for _, account_id in pending})
+    placeholders = ",".join(["%s"] * len(ids))
+    rows = _query(
+        con,
+        f"""
+        SELECT `id`, `last_player_name`, `steam_id`, `country`, `clan_name`,
+               `clan_leader`, `date_created`
+        FROM `players` WHERE `id` IN ({placeholders})
+        """,
+        tuple(ids),
+    )
+    by_id = {int(r["id"]): r for r in rows if r.get("id") is not None}
+    for p, account_id in pending:
+        row = by_id.get(account_id)
+        if not row:
+            continue
+        p["accountId"] = account_id
+        nick = _session_player_name(row.get("last_player_name"))
+        if nick and nick != "???":
+            p["name"] = nick[:64]
+        steam = str(row.get("steam_id") or "").strip()
+        if _STEAM_ID_RE.fullmatch(steam):
+            p["steamId"] = steam
+        country = str(row.get("country") or "").strip().lower()
+        if len(country) == 2 and country.isalpha():
+            p["country"] = country
+        clan = str(row.get("clan_name") or "").strip()
+        if clan:
+            p["clan"] = {"name": clan[:64], "leader": int(row.get("clan_leader") or 0) == 1}
+        created = _dt_unix(row.get("date_created"))
+        if created and created < _VETERAN_BEFORE:
+            p["veteran"] = True
+
+
 def _attach_public_perk_levels(con, servers: list[dict[str, Any]]) -> None:
     """Fill perkLevel from the perkhost counters, the same figure as the profile."""
     players: list[dict[str, Any]] = []
@@ -1466,6 +1533,36 @@ def _attach_public_perk_levels(con, servers: list[dict[str, Any]]) -> None:
         rank = int(match.get("prestigeRank") or 0)
         if rank > 0:
             p["prestigeRank"] = rank
+
+
+def _decorate_admin_live(con, payload: dict[str, Any]) -> None:
+    """Names, perks and countries for the admin live cards.
+
+    Copies each player first: the live cache keeps the raw push, and the
+    public name lookup writes onto the dict it is given.
+    """
+    wrapped: list[dict[str, Any]] = []
+
+    def take(snap: Any) -> None:
+        if not isinstance(snap, dict):
+            return
+        snap["players"] = [_public_live_player(p) for p in (snap.get("players") or [])]
+        wrapped.append(snap)
+
+    live = payload.get("live")
+    if isinstance(live, dict):
+        take(live)
+    all_live = payload.get("liveAll")
+    if isinstance(all_live, dict):
+        for snap in all_live.values():
+            take(snap)
+    if not wrapped or con is None:
+        return
+    try:
+        _attach_public_account_names(con, wrapped)
+        _attach_public_perk_levels(con, wrapped)
+    except Exception as exc:  # noqa: BLE001
+        print(f"admin live names: {exc}", flush=True)
 
 
 def _attach_open_sessions(con, servers: list[dict[str, Any]]) -> None:
@@ -1555,6 +1652,10 @@ def build_public_servers() -> dict[str, Any]:
             _attach_open_sessions(con, out)
         except Exception as exc:  # noqa: BLE001
             print(f"kfm-stats: open sessions: {exc}", flush=True)
+        try:
+            _attach_public_account_names(con, out)
+        except Exception as exc:  # noqa: BLE001
+            print(f"kfm-stats: account names: {exc}", flush=True)
         try:
             _attach_public_perk_levels(con, out)
         except Exception as exc:  # noqa: BLE001
@@ -3195,7 +3296,7 @@ def _ingest_payload(con, body: dict[str, Any]) -> str:
     raise ValueError(f"unknown type: {typ}")
 
 
-# --- Admin auth + controls (password-gated /statistics) ---------------------
+# --- Admin controls. /statistics APIs require a logged-in DB admin. ---------
 
 KF_HOME = Path("/home/kfserver")
 KF_LOGS = KF_HOME / "logs"
@@ -3324,12 +3425,16 @@ def player_cookie_steamid(token: str | None) -> str:
     return steamid
 
 
-def steam_openid_login_url() -> str:
+def steam_openid_login_url(next_path: str = "") -> str:
     origin = site_public_origin()
+    ret = origin + "/api/stats/steam/callback"
+    safe = safe_next_path(next_path)
+    if safe:
+        ret += "?" + urlencode({"next": safe})
     params = {
         "openid.ns": "http://specs.openid.net/auth/2.0",
         "openid.mode": "checkid_setup",
-        "openid.return_to": origin + "/api/stats/steam/callback",
+        "openid.return_to": ret,
         "openid.realm": origin,
         "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
         "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
@@ -3391,15 +3496,42 @@ def player_profile_path(steamid: str) -> str:
     return "/players/" + urllib.parse.quote(slug, safe="")
 
 
-def steam_me_payload(steamid: str) -> dict[str, Any]:
+def safe_next_path(raw: str) -> str:
+    """Same-site path Steam may send the browser back to. Only /statistics."""
+    path = unquote((raw or "").strip())
+    if path in ("/statistics", "/statistics/"):
+        return "/statistics"
+    return ""
+
+
+def player_is_db_admin(con, steamid: str) -> bool:
+    """True when this SteamID64 has players.admin set in perkhost."""
+    if not con or not _STEAM_ID_RE.fullmatch(steamid or ""):
+        return False
+    row = _query_one(
+        con,
+        "SELECT `admin` FROM `players` WHERE `steam_id`=%s LIMIT 1",
+        (steamid,),
+    )
+    return bool(row) and int(row.get("admin") or 0) != 0
+
+
+def steam_me_payload(steamid: str, con=None) -> dict[str, Any]:
     if not steamid:
-        return {"loggedIn": False, "steamId": "", "vanity": "", "name": ""}
+        return {"loggedIn": False, "steamId": "", "vanity": "", "name": "", "admin": False}
     info = _steam_summaries([steamid]).get(steamid) or {}
+    admin = False
+    if con is not None:
+        try:
+            admin = player_is_db_admin(con, steamid)
+        except Exception as exc:  # noqa: BLE001
+            print(f"admin flag: {exc}", flush=True)
     return {
         "loggedIn": True,
         "steamId": steamid,
         "vanity": str(info.get("vanity") or ""),
         "name": str(info.get("name") or ""),
+        "admin": admin,
     }
 
 
@@ -5582,9 +5714,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[%s] %s" % (self.log_date_time_string(), fmt % args), flush=True)
 
-    def _is_authed(self) -> bool:
-        cookies = _parse_cookies(self.headers.get("Cookie"))
-        return _auth_token_ok(cookies.get(ADMIN_COOKIE))
+    def _is_db_admin(self) -> bool:
+        steamid = self._player_steamid()
+        if not steamid or self.con is None:
+            return False
+        return player_is_db_admin(self.con, steamid)
 
     def _player_steamid(self) -> str:
         cookies = _parse_cookies(self.headers.get("Cookie"))
@@ -5609,7 +5743,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _require_auth(self) -> bool:
-        if self._is_authed():
+        try:
+            ok = self._is_db_admin()
+        except Exception as exc:  # noqa: BLE001
+            print(f"admin check failed: {exc}", flush=True)
+            self._send(500, {"error": "database unavailable"})
+            return False
+        if ok:
             return True
         self._send(401, {"error": "auth required", "auth": True})
         return False
@@ -5879,7 +6019,7 @@ class Handler(BaseHTTPRequestHandler):
             if not player_auth_configured():
                 self._send(503, {"error": "steam login not configured"})
                 return
-            self._redirect(steam_openid_login_url())
+            self._redirect(steam_openid_login_url((qs.get("next") or [""])[0]))
             return
         if path == "/api/stats/steam/callback":
             if not player_auth_configured():
@@ -5890,10 +6030,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/")
                 return
             cookie = self._player_cookie_header(player_cookie_value(steamid), PLAYER_TTL_SEC)
-            self._redirect(player_profile_path(steamid), [("Set-Cookie", cookie)])
+            dest = safe_next_path((qs.get("next") or [""])[0]) or player_profile_path(steamid)
+            self._redirect(dest, [("Set-Cookie", cookie)])
             return
         if path == "/api/stats/steam/me":
-            self._send(200, steam_me_payload(self._player_steamid()))
+            self._send(200, steam_me_payload(self._player_steamid(), self.con))
             return
         if path == "/api/stats/steam/friends":
             steamid = self._player_steamid()
@@ -5927,20 +6068,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(blob)
             return
-        # HTML is public shell; data APIs require cookie after password login.
-        if path in ("/statistics", "/statistics/index.html"):
-            html = HTML_PATH.read_text(encoding="utf-8")
-            self._send(200, html, "text/html; charset=utf-8")
-            return
+        # Charts live in the Nuxt app. These APIs require a logged-in DB admin.
         if path == "/api/stats/me":
-            self._send(
-                200,
-                {
-                    "ok": True,
-                    "authed": self._is_authed(),
-                    "authConfigured": admin_configured(),
-                },
-            )
+            try:
+                authed = self._is_db_admin()
+            except Exception as exc:  # noqa: BLE001
+                print(f"admin check failed: {exc}", flush=True)
+                self._send(500, {"error": "database unavailable"})
+                return
+            self._send(200, {"ok": True, "authed": authed})
             return
         if path in (
             "/api/stats/summary",
@@ -5969,7 +6105,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/stats/load":
             server = normalize_server((qs.get("server") or [None])[0])
-            self._send(200, build_load_series(server))
+            payload = build_load_series(server)
+            _decorate_admin_live(self.con, payload)
+            self._send(200, payload)
             return
         if path == "/api/stats/admin/maps":
             self._send(200, {"maps": list_available_maps()})
@@ -6039,30 +6177,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/stats/login":
-            if not admin_configured():
-                self._send(503, {"error": "STATS_ADMIN_PASSWORD not set"})
-                return
-            try:
-                body = self._read_json_body()
-            except ValueError as exc:
-                self._send(400, {"error": str(exc)})
-                return
-            pw = str(body.get("password") or "")
-            expect = admin_password()
-            pw_dig = hashlib.sha256(pw.encode("utf-8")).digest()
-            exp_dig = hashlib.sha256(expect.encode("utf-8")).digest()
-            if not hmac.compare_digest(pw_dig, exp_dig):
-                time.sleep(0.4)
-                self._send(401, {"error": "bad password"})
-                return
-            token = _make_auth_token()
-            cookie = (
-                f"{ADMIN_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ADMIN_TTL_SEC}"
-            )
-            # Secure when behind HTTPS (Caddy terminates TLS).
-            if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
-                cookie += "; Secure"
-            self._send(200, {"ok": True}, extra_headers=[("Set-Cookie", cookie)])
+            # The password cookie no longer opens /statistics. Steam login does,
+            # and only when players.admin is set.
+            self._send(403, {"error": "steam admin login required", "auth": True})
             return
 
         if path == "/api/stats/logout":
@@ -6171,9 +6288,9 @@ def load_env_files() -> None:
 def main() -> None:
     load_env_files()
     load_panel()
-    if not admin_configured():
+    if not player_auth_configured():
         print(
-            "WARN: STATS_ADMIN_PASSWORD unset — /statistics APIs will reject until set",
+            "WARN: STATS_ADMIN_SECRET and STEAM_WEB_API_KEY unset — Steam login and /statistics will reject",
             flush=True,
         )
     con = connect()
@@ -6198,7 +6315,7 @@ def main() -> None:
         f"kfm-stats listening http+udp://{HOST}:{PORT} "
         f"mysql={cfg['user']}@{cfg['host']}/{cfg['db']} days={DAYS} "
         f"load={LOAD_INTERVAL_SEC}s keep={LOAD_KEEP} "
-        f"admin={'on' if admin_configured() else 'OFF'} "
+        f"login={'on' if player_auth_configured() else 'OFF'} "
         f"avatars={'on' if avatar_pil_ok() else 'OFF'}",
         flush=True,
     )

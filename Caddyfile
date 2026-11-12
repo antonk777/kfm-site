@@ -15,9 +15,8 @@
 	handle /api/stats* {
 		reverse_proxy 127.0.0.1:{$STATS_PORT:8765}
 	}
-	handle /statistics* {
-		reverse_proxy 127.0.0.1:{$STATS_PORT:8765}
-	}
+
+	# /statistics is a Nuxt page (database admins only). Do not proxy it here.
 
 	# Companion installer. stats-server writes a row, then sends the file.
 	@companion path_regexp companion (?i)^/(download|KFM-Companion[^/]*\.exe)$
@@ -52,11 +51,19 @@
 		-Server
 	}
 
-	# The Vue app owns /players/* and every other page: unknown paths fall
-	# back to its index.html (SPA routing).
-	handle {
-		try_files {path} /index.html
+	# Map previews and the two JSON files live on disk. Everything else is
+	# the Nuxt server (pages, /sw.js, and the built assets).
+	handle /maps/* {
 		file_server
+	}
+	handle /release.json {
+		file_server
+	}
+	handle /mod-changelog.json {
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3000
 	}
 
 	log {

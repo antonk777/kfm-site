@@ -45,7 +45,6 @@ export default defineNuxtConfig({
   // owns /api so a UI reload does not restart the connection.
   routeRules: {
     "/api/stats/**": { proxy: `${STATS_PROXY}/api/stats/**` },
-    "/statistics/**": { proxy: `${STATS_PROXY}/statistics/**` },
     "/release.json": { proxy: "https://kf-maniacs.com/release.json" },
     "/mod-changelog.json": { proxy: "https://kf-maniacs.com/mod-changelog.json" },
   },
@@ -61,7 +60,6 @@ export default defineNuxtConfig({
       // server restart, and the pages then kept the failed response.
       proxy: {
         "/api/stats": { target: STATS_PROXY, changeOrigin: true },
-        "/statistics": { target: STATS_PROXY, changeOrigin: true },
         "/release.json": { target: "https://kf-maniacs.com", changeOrigin: true },
         "/mod-changelog.json": { target: "https://kf-maniacs.com", changeOrigin: true },
       },

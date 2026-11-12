@@ -8,8 +8,10 @@ import { prettyMap, noticePlace } from "~/lib/format";
 import {
   beginFriendDemo,
   emitFriendAlert,
+  friendDesktopNotify,
   friendNotify,
   refreshFriends,
+  setFriendDesktopNotify,
   setFriendNotify,
   type Friend,
 } from "~/lib/friends";
@@ -115,7 +117,7 @@ const osStatus = ref<"" | "ask" | "sent" | "denied" | "unsupported">("");
 const restore = beginFriendDemo(DEMO_FRIENDS);
 
 function showNotice(): void {
-  emitFriendAlert(playing);
+  emitFriendAlert(playing, true);
 }
 
 function showOsNotice(): void {
@@ -183,19 +185,29 @@ async function deliverOsNotice(): Promise<void> {
   }
 }
 
-async function onToggleNotify(): Promise<void> {
-  const next = !friendNotify.value;
-  if (next && typeof Notification !== "undefined" && Notification.permission === "default") {
-    try {
-      const result = await Notification.requestPermission();
-      denied.value = result === "denied";
-    } catch {
-      denied.value = true;
-    }
-  } else if (typeof Notification !== "undefined") {
-    denied.value = Notification.permission === "denied";
+function onToggleNotify(): void {
+  setFriendNotify(!friendNotify.value);
+}
+
+function onToggleDesktop(): void {
+  const next = !friendDesktopNotify.value;
+  if (!next) {
+    void setFriendDesktopNotify(false);
+    return;
   }
-  await setFriendNotify(next);
+  if (typeof Notification === "undefined") {
+    denied.value = false;
+    return;
+  }
+  const enable = (result: NotificationPermission) => {
+    denied.value = result === "denied";
+    if (result === "granted") void setFriendDesktopNotify(true);
+  };
+  if (Notification.permission === "default") {
+    void Notification.requestPermission().then(enable, () => enable("denied"));
+    return;
+  }
+  enable(Notification.permission);
 }
 
 onMounted(() => {
@@ -220,9 +232,11 @@ onBeforeUnmount(() => {
       profile-to="/players"
       :playing="2"
       :notify="friendNotify"
-      :denied="friendNotify && denied"
+      :desktop="friendDesktopNotify"
+      :denied="denied"
       @toggle="menuOpen = !menuOpen"
       @toggle-notify="onToggleNotify"
+      @toggle-desktop="onToggleDesktop"
     />
 
     <h3 class="label">{{ t("demo.profile") }}</h3>

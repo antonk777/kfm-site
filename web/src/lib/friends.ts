@@ -1,7 +1,7 @@
 // Steam friends of the signed-in player, and who among them is on a KFM server.
-// The header polls this while the player is logged in. Alerts fire only when
-// the account-menu toggle is on, and a friend already announced this tab
-// session is not announced again until they leave.
+// The header polls this while the player is logged in. A friend is announced
+// only when a site or desktop checkbox is on, and someone already announced
+// this tab session is not announced again until they leave.
 import { computed, ref } from "vue";
 import { syncDevicePush } from "./push";
 
@@ -30,23 +30,59 @@ export type FriendsStatus =
   | "noconfig"
   | "login";
 
-const NOTIFY_KEY = "kfm-friend-notify";
+const SITE_KEY = "kfm-friend-notify-site";
+const DESKTOP_KEY = "kfm-friend-notify-desktop";
+const LEGACY_KEY = "kfm-friend-notify";
 const SEEN_KEY = "kfm-friend-seen";
 const POLL_MS = 45_000;
 
 export const friends = ref<Friend[] | null>(null);
 export const friendsStatus = ref<FriendsStatus>("idle");
 
-function readNotify(): boolean {
-  if (import.meta.server) return false;
+function storedFlag(key: string): boolean | null {
   try {
-    return localStorage.getItem(NOTIFY_KEY) === "1";
+    const value = localStorage.getItem(key);
+    if (value === "1") return true;
+    if (value === "0") return false;
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export const friendNotify = ref(readNotify());
+function writeFlag(key: string, on: boolean): void {
+  try {
+    localStorage.setItem(key, on ? "1" : "0");
+  } catch {
+    // The choice still applies until the next reload.
+  }
+}
+
+function readNotifyPrefs(): { site: boolean; desktop: boolean } {
+  if (import.meta.server) return { site: false, desktop: false };
+  const site = storedFlag(SITE_KEY);
+  const desktop = storedFlag(DESKTOP_KEY);
+  if (site !== null || desktop !== null) {
+    return { site: site === true, desktop: desktop === true };
+  }
+  // The old single switch turned both on. Desktop stays off until the browser
+  // has already allowed it, so opening the site does not ask again.
+  if (storedFlag(LEGACY_KEY) !== true) return { site: false, desktop: false };
+  const granted = typeof Notification !== "undefined" && Notification.permission === "granted";
+  writeFlag(SITE_KEY, true);
+  writeFlag(DESKTOP_KEY, granted);
+  return { site: true, desktop: granted };
+}
+
+const initialNotify = readNotifyPrefs();
+export const friendNotify = ref(initialNotify.site);
+export const friendDesktopNotify = ref(initialNotify.desktop);
+export const friendsPrivacyPrompt = ref(false);
+
+function promptFriendsPrivacy(otherOn: boolean): void {
+  if (otherOn || friendDemo.value) return;
+  friendsPrivacyPrompt.value = true;
+}
 
 export const playingFriends = computed(() => (friends.value ?? []).filter((f) => f.playing));
 
@@ -63,20 +99,20 @@ export function steamFriendsPrivacy(steamId: string): string {
   return "https://steamcommunity.com/my/edit/settings";
 }
 
-let onAlert: ((friend: Friend) => void) | null = null;
+let onAlert: ((friend: Friend, preview?: boolean) => void) | null = null;
 let timer = 0;
 let running = false;
 let generation = 0;
 let alerted = loadAlerted();
 export const friendDemo = ref(false);
 
-export function setFriendAlertHandler(fn: ((friend: Friend) => void) | null): void {
+export function setFriendAlertHandler(fn: ((friend: Friend, preview?: boolean) => void) | null): void {
   onAlert = fn;
 }
 
-export function emitFriendAlert(friend: Friend): void {
+export function emitFriendAlert(friend: Friend, preview = false): void {
   try {
-    onAlert?.(friend);
+    onAlert?.(friend, preview);
   } catch {
     // The list itself is still updated.
   }
@@ -145,7 +181,7 @@ function notePlaying(list: Friend[]): void {
   for (const friend of list) {
     if (friend.playing && friend.serverId) current.add(presenceKey(friend));
   }
-  if (friendNotify.value) {
+  if (friendNotify.value || friendDesktopNotify.value) {
     for (const friend of list) {
       if (!friend.playing || !friend.serverId) continue;
       const key = presenceKey(friend);
@@ -164,15 +200,27 @@ function notePlaying(list: Friend[]): void {
   saveAlerted();
 }
 
-export async function setFriendNotify(on: boolean): Promise<void> {
+export function setFriendNotify(on: boolean): void {
+  const other = friendDesktopNotify.value;
   friendNotify.value = on;
-  try {
-    localStorage.setItem(NOTIFY_KEY, on ? "1" : "0");
-  } catch {
-    // The toggle still applies until the next reload.
+  writeFlag(SITE_KEY, on);
+  if (on) promptFriendsPrivacy(other);
+  if (on && friends.value) notePlaying(friends.value);
+}
+
+export async function setFriendDesktopNotify(on: boolean): Promise<boolean> {
+  if (on && (typeof Notification === "undefined" || Notification.permission !== "granted")) {
+    friendDesktopNotify.value = false;
+    writeFlag(DESKTOP_KEY, false);
+    return false;
   }
+  const other = friendNotify.value;
+  friendDesktopNotify.value = on;
+  writeFlag(DESKTOP_KEY, on);
+  if (on) promptFriendsPrivacy(other);
   if (on && friends.value) notePlaying(friends.value);
   if (!friendDemo.value) await syncDevicePush(on);
+  return on;
 }
 
 export async function refreshFriends(fresh = false): Promise<void> {

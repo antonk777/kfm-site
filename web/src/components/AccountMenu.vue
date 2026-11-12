@@ -8,13 +8,16 @@ defineProps<{
   profileTo: string;
   playing: number;
   notify: boolean;
+  desktop: boolean;
   denied?: boolean;
+  admin?: boolean;
 }>();
 
 defineEmits<{
   toggle: [];
   logout: [];
   "toggle-notify": [];
+  "toggle-desktop": [];
 }>();
 
 const root = ref<HTMLElement | null>(null);
@@ -42,37 +45,47 @@ defineExpose({ contains });
           <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" />
         </svg>
       </button>
-      <button
-        class="header-account-logout"
-        type="button"
-        :title="t('nav.logout')"
-        :aria-label="t('nav.logout')"
-        @click="$emit('logout')"
-      >
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-          <polyline points="16 17 21 12 16 7" />
-          <line x1="21" y1="12" x2="9" y2="12" />
-        </svg>
-      </button>
     </div>
     <div v-if="open" class="account-menu" role="menu">
       <router-link role="menuitem" :to="profileTo" @click="$emit('toggle')">{{ t("nav.profile") }}</router-link>
+      <router-link v-if="admin" role="menuitem" to="/statistics" @click="$emit('toggle')">{{ t("nav.statistics") }}</router-link>
       <router-link role="menuitem" to="/friends" @click="$emit('toggle')">
         {{ t("nav.friends") }}
         <span v-if="playing" class="menu-count">{{ playing }}</span>
       </router-link>
-      <button
-        class="account-toggle"
-        type="button"
-        role="switch"
-        :aria-checked="notify"
-        @click="$emit('toggle-notify')"
-      >
-        <span>{{ t("nav.friendNotify") }}</span>
-        <span class="switch" :class="{ on: notify }" aria-hidden="true"></span>
-      </button>
+      <div class="account-notify">
+        <button
+          class="account-check"
+          type="button"
+          role="checkbox"
+          :aria-checked="notify"
+          @click="$emit('toggle-notify')"
+        >
+          <span class="box" :class="{ on: notify }" aria-hidden="true"></span>
+          <span>{{ t("nav.notifySite") }}</span>
+        </button>
+        <button
+          class="account-check"
+          type="button"
+          role="checkbox"
+          :aria-checked="desktop"
+          @click="$emit('toggle-desktop')"
+        >
+          <span class="box" :class="{ on: desktop }" aria-hidden="true"></span>
+          <span>{{ t("nav.notifyDesktop") }}</span>
+        </button>
+      </div>
       <p v-if="denied" class="account-note">{{ t("friends.allow") }}</p>
+      <div class="account-end">
+        <button class="account-logout" type="button" role="menuitem" @click="$emit('logout')">
+          {{ t("nav.logout") }}
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -170,48 +183,40 @@ defineExpose({ contains });
   background: rgba(198, 18, 23, 0.16);
   text-decoration: none;
 }
-.account-toggle {
+.account-notify {
+  margin-top: 4px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--border);
+}
+.account-check {
   appearance: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
-  margin-top: 4px;
-  padding: 8px 10px;
+  margin: 0 0 8px;
+  padding: 0;
   border: 0;
-  border-top: 1px solid var(--border);
   background: transparent;
-  color: var(--text-dim);
+  color: var(--text);
   font: 13px/1.35 var(--font-body);
   text-align: left;
   cursor: pointer;
 }
-.account-toggle:hover { color: var(--text); }
-.switch {
-  position: relative;
-  width: 32px;
-  height: 18px;
-  flex: none;
-  border-radius: 9px;
-  background: #2a2a32;
-  border: 1px solid var(--border-bright);
-}
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 1px;
-  left: 1px;
+.box {
   width: 14px;
   height: 14px;
-  border-radius: 50%;
-  background: var(--text-dim);
+  flex: none;
+  border: 1px solid var(--border-bright);
+  border-radius: 2px;
+  background: #1a1a20 center / 12px 12px no-repeat;
 }
-.switch.on {
-  background: rgba(198, 18, 23, 0.55);
+.box.on {
+  background-color: var(--accent);
   border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.2 4.6 9 10 3' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='square'/%3E%3C/svg%3E");
 }
-.switch.on::after { left: 15px; background: #fff; }
+.account-check:hover { color: #fff; }
 .account-note {
   margin: 0;
   padding: 0 10px 8px;
@@ -219,21 +224,31 @@ defineExpose({ contains });
   font-size: 12px;
   line-height: 1.4;
 }
-.header-account-logout {
+.account-end {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.account-logout {
   appearance: none;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 32px;
-  padding: 0;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
   border: 0;
-  border-left: 1px solid var(--border);
   background: transparent;
   color: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
   cursor: pointer;
 }
-.header-account-logout:hover {
-  color: var(--accent-bright);
-  background: var(--panel);
+.account-logout svg { display: block; flex: none; }
+.account-logout:hover {
+  color: #fff;
+  background: rgba(198, 18, 23, 0.16);
 }
 </style>

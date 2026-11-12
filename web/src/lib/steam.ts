@@ -6,6 +6,8 @@ export interface SteamMe {
   steamId: string;
   vanity: string;
   name: string;
+  /** Set when this Steam account has players.admin in the database. */
+  admin?: boolean;
 }
 
 export const steamReady = ref(false);

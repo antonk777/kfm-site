@@ -52,13 +52,7 @@ export async function syncDevicePush(on: boolean): Promise<boolean> {
       pushReady.value = false;
       return false;
     }
-    if (Notification.permission === "default") {
-      const result = await Notification.requestPermission();
-      if (result !== "granted") {
-        pushReady.value = false;
-        return false;
-      }
-    }
+    // Permission is asked only from the desktop checkbox, in the click itself.
     if (Notification.permission !== "granted") {
       pushReady.value = false;
       return false;

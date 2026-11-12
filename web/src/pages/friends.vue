@@ -12,8 +12,10 @@ const refreshing = ref(false);
 const privacy = computed(() => steamFriendsPrivacy(steamUser.value?.steamId || ""));
 const loggedIn = computed(() => steamUser.value?.loggedIn === true);
 
+const known = computed(() => (friends.value ?? []).filter((friend) => friend.played));
+
 const filtered = computed(() => {
-  const list = friends.value ?? [];
+  const list = known.value;
   const q = query.value.trim().toLowerCase();
   if (!q) return list;
   return list.filter((friend) => friend.name.toLowerCase().includes(q));
@@ -33,7 +35,7 @@ async function reload(): Promise<void> {
   <div class="page">
     <h2 class="section-title">
       {{ t("friends.title") }}
-      <span v-if="loggedIn && friendsStatus === 'ok'" class="count">{{ friends?.length ?? 0 }}</span>
+      <span v-if="loggedIn && friendsStatus === 'ok'" class="count">{{ known.length }}</span>
     </h2>
 
     <p v-if="!steamReady" class="empty-note">{{ t("loading") }}</p>
@@ -57,7 +59,7 @@ async function reload(): Promise<void> {
       <template v-else>
         <div class="toolbar">
           <input
-            v-if="(friends?.length ?? 0) > 8"
+            v-if="known.length > 8"
             v-model="query"
             type="search"
             :placeholder="t('friends.filter')"
@@ -69,7 +71,8 @@ async function reload(): Promise<void> {
             {{ t("friends.refresh") }}
           </button>
         </div>
-        <p v-if="!friends?.length" class="empty-note">{{ t("friends.empty") }}</p>
+        <p v-if="!(friends?.length ?? 0)" class="empty-note">{{ t("friends.empty") }}</p>
+        <p v-else-if="!known.length" class="empty-note">{{ t("friends.nonePlayed") }}</p>
         <p v-else-if="!filtered.length" class="empty-note">{{ t("friends.noMatch") }}</p>
         <div v-else class="cards">
           <FriendRow v-for="friend in filtered" :key="friend.steamId" :friend="friend" />

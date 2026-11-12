@@ -27,6 +27,10 @@ interface LivePlayer {
   prestigeRank?: number;
   steamId?: string;
   steam?: string;
+  accountId?: number;
+  country?: string;
+  clan?: { name: string; leader?: boolean } | null;
+  veteran?: boolean;
 }
 
 interface ServerInfo {
@@ -115,6 +119,11 @@ function perkTitle(p: LivePlayer): string {
   const level = perkLevelOf(p);
   if (level === null) return name;
   return level >= 9 ? `${name} · MANIAC` : `${name} · ${level}`;
+}
+
+function playerCountry(p: LivePlayer): string {
+  const raw = String(p.country || "").trim().toLowerCase();
+  return /^[a-z]{2}$/.test(raw) ? raw : "";
 }
 
 function steamOf(p: LivePlayer): string {
@@ -399,7 +408,26 @@ onUnmounted(() => {
                   <img v-if="avatarUrl(p)" :src="avatarUrl(p)" alt="" @error="markAvatarFailed(p)" />
                   <img v-else class="ph" src="/assets/avatar-skull.svg" alt="" />
                 </span>
-                <span class="name">{{ p.name || "???" }}</span>
+                <span class="who">
+                  <span class="name">{{ p.name || "???" }}</span>
+                  <span v-if="p.country || p.clan || p.veteran" class="who-meta">
+                    <span
+                      v-if="playerCountry(p)"
+                      class="loc"
+                      tabindex="0"
+                      :data-tip="countryTitle(playerCountry(p))"
+                      :aria-label="countryTitle(playerCountry(p))"
+                    >
+                      <span class="fi" :class="`fi-${playerCountry(p)}`" aria-hidden="true"></span>
+                    </span>
+                    <span
+                      v-if="p.clan"
+                      class="clan"
+                      :title="p.clan.leader ? t('hero.clanLeader') : undefined"
+                    >{{ p.clan.name }}</span>
+                    <span v-if="p.veteran" class="vet" :title="t('hero.veteranHint')">{{ t("hero.veteran") }}</span>
+                  </span>
+                </span>
                 <PerkIcon
                   v-if="perkId(p) || perkLevelOf(p) !== null"
                   :perk="perkId(p) || p.perk"
@@ -785,13 +813,74 @@ a.plist-player:hover {
 .plist .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .plist .avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: cover; opacity: 0.82; }
 .plist .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
-.plist .name {
+.plist .who {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.plist .name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.plist .who-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.plist .who-meta .clan {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plist .who-meta .vet { flex: none; }
+.plist .who-meta .loc {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  line-height: 0;
+  cursor: help;
+  outline: none;
+}
+.plist .who-meta .loc .fi {
+  width: 16px;
+  height: 11px;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+  background-size: cover;
+}
+.plist .who-meta .loc::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  background: #1d1d25;
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 2;
+}
+.plist .who-meta .loc:hover::after,
+.plist .who-meta .loc:focus-visible::after { opacity: 1; visibility: visible; }
 .plist .empty { color: var(--text-faint); padding: 6px 8px; }
 
 .server-addr {

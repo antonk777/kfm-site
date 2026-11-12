@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { LANG_LABEL, LOCALES, i18n, setLocale, t, type Locale } from "~/i18n";
 import { SESSIONS_PUBLIC } from "~/lib/flags";
 import { prettyMap, noticePlace } from "~/lib/format";
 import {
+  friendDesktopNotify,
   friendNotify,
+  friendsPrivacyPrompt,
   playingFriends,
   setFriendAlertHandler,
+  setFriendDesktopNotify,
   setFriendNotify,
   startFriendWatch,
+  steamFriendsPrivacy,
   stopFriendWatch,
   type Friend,
 } from "~/lib/friends";
@@ -115,8 +119,19 @@ function onDocPointer(event: Event): void {
   accountOpen.value = false;
 }
 
+const privacyUrl = computed(() => steamFriendsPrivacy(steamUser.value?.steamId || ""));
+
+function closePrivacy(): void {
+  friendsPrivacyPrompt.value = false;
+}
+
 function onDocKey(event: KeyboardEvent): void {
-  if (event.key === "Escape") accountOpen.value = false;
+  if (event.key !== "Escape") return;
+  if (friendsPrivacyPrompt.value) {
+    closePrivacy();
+    return;
+  }
+  accountOpen.value = false;
 }
 
 function pushFriendToast(friend: Friend): void {
@@ -139,8 +154,7 @@ function pushFriendToast(friend: Friend): void {
   }, 20000);
 }
 
-function showFriendAlert(friend: Friend): void {
-  pushFriendToast(friend);
+function showDesktopAlert(friend: Friend): void {
   // A saved subscription is delivered by the service worker, including after
   // this tab is closed. Without one, the browser still notifies this device
   // for as long as the site is open.
@@ -161,22 +175,40 @@ function showFriendAlert(friend: Friend): void {
       note.close();
     };
   } catch {
-    // The toast is already on the page.
+    // The site notice is independent of the desktop one.
   }
 }
 
-async function onToggleNotify(): Promise<void> {
-  const next = !friendNotify.value;
-  if (next && typeof Notification !== "undefined" && Notification.permission === "default") {
-    try {
-      notifyPerm.value = await Notification.requestPermission();
-    } catch {
-      notifyPerm.value = "denied";
-    }
-  } else if (typeof Notification !== "undefined") {
-    notifyPerm.value = Notification.permission;
+function showFriendAlert(friend: Friend, preview = false): void {
+  if (preview || friendNotify.value) pushFriendToast(friend);
+  if (!preview && friendDesktopNotify.value) showDesktopAlert(friend);
+}
+
+function onToggleNotify(): void {
+  setFriendNotify(!friendNotify.value);
+}
+
+function onToggleDesktop(): void {
+  const next = !friendDesktopNotify.value;
+  if (!next) {
+    void setFriendDesktopNotify(false);
+    return;
   }
-  await setFriendNotify(next);
+  if (typeof Notification === "undefined") {
+    notifyPerm.value = "unsupported";
+    return;
+  }
+  const enable = (result: NotificationPermission) => {
+    notifyPerm.value = result;
+    if (result === "granted") void setFriendDesktopNotify(true);
+  };
+  // Ask in the click itself. An await before this loses the gesture, and the
+  // browser then neither prompts nor shows anything.
+  if (Notification.permission === "default") {
+    void Notification.requestPermission().then(enable, () => enable("denied"));
+    return;
+  }
+  enable(Notification.permission);
 }
 
 onMounted(() => {
@@ -190,7 +222,12 @@ onMounted(() => {
   document.addEventListener("pointerdown", onDocPointer);
   document.addEventListener("keydown", onDocKey);
   void loadSteamUser().then(() => {
-    if (friendNotify.value && steamUser.value?.loggedIn) void syncDevicePush(true);
+    if (!friendDesktopNotify.value || !steamUser.value?.loggedIn) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+      void setFriendDesktopNotify(false);
+      return;
+    }
+    void syncDevicePush(true);
   });
   const inner = headerInner.value;
   if (inner) {
@@ -211,6 +248,7 @@ onBeforeUnmount(() => {
 });
 
 function onLogout(): void {
+  accountOpen.value = false;
   void logoutSteam();
 }
 
@@ -298,10 +336,13 @@ async function onSearch(): Promise<void> {
               :profile-to="profileTo"
               :playing="playingFriends.length"
               :notify="friendNotify"
-              :denied="friendNotify && notifyPerm === 'denied'"
+              :desktop="friendDesktopNotify"
+              :denied="notifyPerm === 'denied'"
+              :admin="steamUser?.admin === true"
               @toggle="accountOpen = !accountOpen"
               @logout="onLogout"
               @toggle-notify="onToggleNotify"
+              @toggle-desktop="onToggleDesktop"
             />
           </template>
           <a
@@ -334,6 +375,14 @@ async function onSearch(): Promise<void> {
     </div>
     <p v-if="searchError" class="search-error">{{ searchError }}</p>
   </header>
+
+  <div v-if="friendsPrivacyPrompt" class="privacy-pop" @click.self="closePrivacy">
+    <div class="privacy-card" role="dialog" aria-modal="true" :aria-label="t('friends.privacyTitle')">
+      <p>{{ t("friends.privacyNeed") }}</p>
+      <a class="privacy-link" :href="privacyUrl" target="_blank" rel="noopener">{{ t("friends.privacy") }}</a>
+      <button type="button" class="privacy-close" @click="closePrivacy">{{ t("friends.privacyClose") }}</button>
+    </div>
+  </div>
 
   <div class="friend-toasts" aria-live="polite">
     <FriendToast
@@ -546,6 +595,58 @@ async function onSearch(): Promise<void> {
   text-decoration: none;
 }
 .header-steam svg { display: block; flex: none; }
+
+.privacy-pop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+}
+.privacy-card {
+  width: min(420px, 100%);
+  padding: 18px 18px 16px;
+  background: rgba(16, 16, 20, 0.98);
+  border: 1px solid var(--border-bright);
+  border-top: 3px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.55);
+}
+.privacy-card p {
+  margin: 0 0 14px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.privacy-link {
+  display: inline-flex;
+  margin-bottom: 16px;
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.privacy-close {
+  appearance: none;
+  display: block;
+  margin-left: auto;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.privacy-close:hover { border-color: var(--accent-deep); color: #fff; }
 
 .friend-toasts {
   position: fixed;

@@ -16,6 +16,8 @@ const TITLE_KEY: Record<string, string> = {
   "players-id": "nav.home",
   player: "nav.home",
   friends: "nav.friends",
+  statistics: "nav.statistics",
+  "statistics-index": "nav.statistics",
   "demo-friends": "demo.title",
   "friend-demo": "demo.title",
 };
