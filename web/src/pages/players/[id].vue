@@ -729,7 +729,7 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
 .avatar-frame .avatar-placeholder {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   opacity: 0.82;
   filter: drop-shadow(0 0 8px rgba(198, 18, 23, 0.45));
 }

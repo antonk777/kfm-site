@@ -23,7 +23,7 @@ const mapLabel = computed(() => (props.friend.map ? prettyMap(props.friend.map) 
     <router-link class="who" :to="profileTo">
       <span class="avatar">
         <img v-if="avatar" :src="avatar" alt="" @error="broken = true" />
-        <img v-else src="/assets/avatar-skull.svg" alt="" />
+        <img v-else class="ph" src="/assets/avatar-skull.svg" alt="" />
       </span>
       <span class="meta">
         <span class="name">{{ friend.name }}</span>
@@ -75,6 +75,7 @@ const mapLabel = computed(() => (props.friend.map ? prettyMap(props.friend.map) 
   overflow: hidden;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar .ph { object-fit: contain; }
 .meta {
   display: flex;
   flex-direction: column;

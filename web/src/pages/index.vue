@@ -811,7 +811,7 @@ a.plist-player:hover {
   overflow: hidden;
 }
 .plist .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.plist .avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: cover; opacity: 0.82; }
+.plist .avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: contain; opacity: 0.82; }
 .plist .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
 .plist .who {
   flex: 1;

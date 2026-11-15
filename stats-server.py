@@ -3603,6 +3603,20 @@ def _fetch_steam_friend_ids(steamid: str) -> tuple[str, list[str]]:
     return "ok", list(dict.fromkeys(ids))
 
 
+def friends_text(steamid: str) -> str:
+    """Plain lines for the game server. END closes a real answer, including
+    an empty public list. NONE is a private list or Steam being unreachable.
+    """
+    if not _STEAM_ID_RE.fullmatch(steamid or ""):
+        return "NONE\n"
+    status, ids = _steam_friend_ids(steamid)
+    if status != "ok":
+        print(f"steam friends game {status}", flush=True)
+        return "NONE\n"
+    body = "".join(sid + "\n" for sid in ids)
+    return body + "END\n"
+
+
 def _steam_friend_ids(steamid: str, *, fresh: bool = False) -> tuple[str, list[str]]:
     cached = _friend_cache_get(steamid, fresh)
     if cached is not None:
@@ -5885,6 +5899,21 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         if companion_file_name(path):
             self._serve_companion_download(path)
+            return
+        if path == "/api/stats/friends.txt":
+            # Caddy adds this. The game servers connect straight to the stats
+            # port, same as the avatar route. The public site must not be a
+            # way to read someone else's friends.
+            if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
+                self._send(404, {"error": "not found"})
+                return
+            steam = ((qs.get("steam") or [""])[0] or "").strip()
+            try:
+                body = friends_text(steam)
+            except Exception as exc:  # noqa: BLE001
+                print(f"steam friends game failed: {type(exc).__name__}", flush=True)
+                body = "NONE\n"
+            self._send(200, body, "text/plain; charset=ascii")
             return
         if path in AVATAR_ROUTES:
             # Caddy adds this. The game server connects straight to 127.0.0.1.

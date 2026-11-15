@@ -156,7 +156,7 @@ function liveFriend(r: TopPlayerEntry): Friend | null {
 .top-avatar-empty img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   opacity: 0.82;
 }
 .top-name { color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

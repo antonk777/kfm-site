@@ -832,7 +832,7 @@ function badgeHint(key: string): string {
   flex: none;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: cover; opacity: 0.82; }
+.avatar .ph { width: 100%; height: 100%; margin: 0; object-fit: contain; opacity: 0.82; }
 .avatar.placeholder { display: flex; align-items: center; justify-content: center; }
 .avatar.sm { width: 36px; height: 36px; }
 .skin {

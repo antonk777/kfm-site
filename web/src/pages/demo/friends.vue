@@ -290,7 +290,7 @@ onBeforeUnmount(() => {
 .you img {
   width: 64px;
   height: 64px;
-  object-fit: cover;
+  object-fit: contain;
   background: #0c0c10;
   border: 1px solid var(--border);
 }
