@@ -347,7 +347,7 @@ async function onSearch(): Promise<void> {
           </template>
           <a
             class="header-discord"
-            href="https://discord.gg/MJXsav9DFC"
+            href="https://kf-maniacs.com/discord"
             target="_blank"
             rel="noopener"
             :title="t('srv.discord')"
@@ -398,7 +398,9 @@ async function onSearch(): Promise<void> {
     />
   </div>
 
-  <slot />
+  <div class="site-content">
+    <slot />
+  </div>
 
   <footer class="footer">{{ t("footer.made") }} · kf-maniacs.com</footer>
 </template>
@@ -767,6 +769,10 @@ async function onSearch(): Promise<void> {
 .site-header.cramped .search input { flex: 1; width: auto; min-width: 0; }
 .site-header.cramped .header-actions { justify-content: flex-start; flex-wrap: wrap; }
 .site-header.cramped .header-discord { margin-left: auto; }
+
+.site-content {
+  flex: 1 0 auto;
+}
 
 .footer {
   margin-top: 50px;

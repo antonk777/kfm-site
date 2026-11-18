@@ -4,8 +4,8 @@ import ChangelogList from "~/components/ChangelogList.vue";
 import { groupNotes, useModChangelog } from "~/lib/changelog";
 import { i18n, t } from "~/i18n";
 
-const { entries } = useModChangelog();
-const groups = computed(() => groupNotes(entries.value ?? [], i18n.locale));
+const { entries, summaries } = useModChangelog();
+const groups = computed(() => groupNotes(entries.value ?? [], i18n.locale, summaries.value));
 </script>
 
 <template>

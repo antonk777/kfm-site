@@ -530,13 +530,14 @@ async function changeMap(id: string): Promise<void> {
     return;
   }
   if (busy.value) return;
-  if (!window.confirm(t("dash.confirmMap", { server: tabLabel(id), map: mapName }))) return;
+  const mapLabel = prettyMap(mapName);
+  if (!window.confirm(t("dash.confirmMap", { server: tabLabel(id), map: mapLabel }))) return;
   busy.value = true;
-  setMsg(id, t("dash.changing", { map: mapName }), false);
+  setMsg(id, t("dash.changing", { map: mapLabel }), false);
   try {
     const data = await post("/api/stats/admin/map", { server: id, map: mapName });
     const ok = data.ok !== false && !data.error;
-    setMsg(id, ok ? t("dash.done", { what: String(data.map || mapName) }) : t("dash.failed", { error: String(data.error || "fail") }), !ok);
+    setMsg(id, ok ? t("dash.done", { what: prettyMap(String(data.map || mapName)) }) : t("dash.failed", { error: String(data.error || "fail") }), !ok);
   } catch (e) {
     if ((e as Error).message !== "auth") setMsg(id, (e as Error).message, true);
   } finally {
@@ -720,7 +721,7 @@ async function saveLog(id: string): Promise<void> {
               <button type="button" class="btn danger" :disabled="busy" @click="restart(slot.id)">{{ t("dash.restart") }}</button>
               <select :value="cardMap(slot.id)" :disabled="busy" :aria-label="t('dash.map')" @change="onMapChange(slot.id, $event)">
                 <option value="">{{ t("dash.mapPick") }}</option>
-                <option v-for="m in maps" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in maps" :key="m" :value="m">{{ prettyMap(m) }}</option>
               </select>
               <button type="button" class="btn" :disabled="busy" @click="changeMap(slot.id)">{{ t("dash.map") }}</button>
               <button type="button" class="btn" :disabled="busy" @click="showLog(slot.id)">{{ t("dash.log") }}</button>

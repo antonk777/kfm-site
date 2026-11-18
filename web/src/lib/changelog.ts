@@ -21,9 +21,13 @@ export interface ModNote {
 }
 
 export interface DayGroup {
+  key: string;
   day: string;
+  summary: string;
   notes: string[];
 }
+
+export type DaySummary = Omit<ModNote, "when" | "rev"> & { day: string };
 
 const MONTHS: Record<string, readonly string[]> = {
   en: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
@@ -47,28 +51,30 @@ export function formatDay(stamp: string, locale: string): string {
   const year = Number(match[3]);
   if (month < 1 || month > 12 || day < 1 || day > 31) return raw;
   if (locale === "zh" || locale === "ja") return `${year}年${month}月${day}日`;
-  const names = MONTHS[locale] ?? MONTHS.en;
+  const names = MONTHS[locale] ?? MONTHS.en!;
   const name = names[month - 1];
   if (locale === "es" || locale === "pt") return `${day} de ${name} de ${year}`;
   if (locale === "de") return `${day}. ${name} ${year}`;
   return `${day} ${name} ${year}`;
 }
 
-export function noteText(entry: ModNote, locale: string): string {
+export function noteText(entry: Pick<ModNote, "en">, locale: string): string {
   const text = (entry as unknown as Record<string, string | undefined>)[locale];
   if (text && text.trim()) return text.trim();
   return (entry.en || "").trim();
 }
 
-export function groupNotes(entries: ModNote[], locale: string): DayGroup[] {
+export function groupNotes(entries: ModNote[], locale: string, summaries: DaySummary[] = []): DayGroup[] {
   const groups: DayGroup[] = [];
   const index = new Map<string, DayGroup>();
+  const byDay = new Map(summaries.map((summary) => [summary.day, summary]));
   for (const entry of entries) {
-    const day = formatDay(entry.when, locale);
-    let group = index.get(day);
+    const key = entry.when.split(" ")[0] || entry.when;
+    let group = index.get(key);
     if (!group) {
-      group = { day, notes: [] };
-      index.set(day, group);
+      const summary = byDay.get(key);
+      group = { key, day: formatDay(key, locale), summary: summary ? noteText(summary, locale) : "", notes: [] };
+      index.set(key, group);
       groups.push(group);
     }
     const text = noteText(entry, locale);
@@ -77,18 +83,21 @@ export function groupNotes(entries: ModNote[], locale: string): DayGroup[] {
   return groups;
 }
 
-export function previewGroups(entries: ModNote[], locale: string, limit: number): DayGroup[] {
-  return groupNotes(entries.slice(0, limit), locale);
+export function previewGroups(entries: ModNote[], locale: string, limit: number, summaries: DaySummary[] = []): DayGroup[] {
+  // Limit whole days, keeping every detail available inside each disclosure.
+  return groupNotes(entries, locale, summaries).filter((group) => group.summary).slice(0, limit);
 }
 
-export function useModChangelog(): { entries: Ref<ModNote[] | null> } {
+export function useModChangelog(): { entries: Ref<ModNote[] | null>; summaries: Ref<DaySummary[]> } {
   const entries = ref<ModNote[] | null>(null);
+  const summaries = ref<DaySummary[]>([]);
   onMounted(() => {
     fetch("/mod-changelog.json", { cache: "no-store" })
       .then(async (res) => {
         const text = await res.text();
-        if (!text.trim().startsWith("{")) return [];
-        const data = JSON.parse(text) as { entries?: ModNote[] };
+        if (!res.ok || !text.trim().startsWith("{")) return [];
+        const data = JSON.parse(text) as { entries?: ModNote[]; summaries?: DaySummary[] };
+        summaries.value = Array.isArray(data.summaries) ? data.summaries : [];
         return Array.isArray(data.entries) ? data.entries : [];
       })
       .then((rows) => {
@@ -98,5 +107,5 @@ export function useModChangelog(): { entries: Ref<ModNote[] | null> } {
         entries.value = [];
       });
   });
-  return { entries };
+  return { entries, summaries };
 }

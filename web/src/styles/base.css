@@ -48,7 +48,13 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 var(--font-body);
+}
+
+#__nuxt {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* Thin, dark scrollbars (Firefox + WebKit/Blink). */

@@ -12,6 +12,10 @@
 	root * {$SITE_ROOT:/var/www/kfm.manul.lol}
 	encode gzip zstd
 
+	# Shareable Discord invite URL; keep it temporary so the invite can change.
+	@discord path /discord /discord/
+	redir @discord https://discord.gg/MJXsav9DFC 302
+
 	handle /api/stats* {
 		reverse_proxy 127.0.0.1:{$STATS_PORT:8765}
 	}

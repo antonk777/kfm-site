@@ -14,6 +14,20 @@ Public download page for **KFM Companion** at [https://kf-maniacs.com/](https://
 | `sync-now.sh` | Forced-command entry for release sync |
 | GitHub Action on `KFMLauncher` | On every Release → SSH → `sync-now.sh` (instant) |
 
+## Daily change log summaries
+
+The website change log shows one short editorial summary per Moscow calendar
+day, with all detailed notes inside a native expandable section. The homepage
+previews the three most recent days with highlights. Days with only fixes or
+removals, and older unsummarized days, keep their full log without summary text.
+
+Summaries are maintained by the changelog skill in
+`tools/changelog_summaries.json` in the parent repository. The initial backfill
+starts on 8 November 2026. `python tools/changelog.py summarize <file.json>`
+replaces a day's summary in all site languages; `check` detects missing or stale
+reviews. `deploy.bat` publishes summaries with the existing notes in
+`/mod-changelog.json`. They are not bundled into the site build.
+
 ## Instant release sync
 
 Publishing (or editing) a Release in `antonk777/KFMLauncher` runs
@@ -72,6 +86,11 @@ query port (28852 + game port - 7707) being closed in the host firewall, see
 
 ## Discord card on the landing page
 
+The shareable URL [https://kf-maniacs.com/discord](https://kf-maniacs.com/discord)
+redirects to `https://discord.gg/MJXsav9DFC`. Caddy handles `/discord` and
+`/discord/` with HTTP 302 so the destination can be updated without a cached
+permanent redirect. Update the destination in `Caddyfile` if the invite changes.
+
 Under the server cards the landing page shows the KF-Maniacs Discord
 (`discord.gg/MJXsav9DFC`): name and icon, members online and in total, and a join
 button. `stats-server.py` asks Discord once a minute (`DISCORD_POLL_SEC`) for everyone
@@ -96,6 +115,22 @@ python -I tools/gen_map_shots.py            # same for the local KF install
 
 A map without a file shows the caption on a plain background.
 
+Maps without embedded previews have manually supplied screenshots in `maps/`:
+
+| Map | Preview source |
+| --- | --- |
+| Atlas | [Steam Workshop preview](https://steamcommunity.com/sharedfiles/filedetails/?id=98493090) |
+| High Rise | [Steam Workshop preview](https://steamcommunity.com/sharedfiles/filedetails/?id=115212469) |
+| Defence Snow KFM | Local in-game capture of `KF-Defence-Snow_KFM`, without HUD (17 Nov 2026) |
+| Meow Night | Local in-game capture of `KF-Meow_Night`, without HUD (17 Nov 2026) |
+
+Keep both `kf-highrise[beta1].jpg` (live map filename) and
+`kf-highrise_beta1_.jpg` (older session records). Retain previews of removed maps,
+including `kf-prison_extended.jpg`, because past sessions still display them.
+The generator leaves manually supplied images alone when a map has no embedded
+preview. Overrun's embedded screenshots are named `lvlprev1` through `lvlprev4`;
+`tools/gen_map_shots.py` recognizes that prefix so it does not choose a wall texture.
+
 ## Steam login in the header
 
 The Vue header has a Steam button (`GET /api/stats/steam/login`). It is Steam
@@ -103,8 +138,8 @@ OpenID: the player approves on steamcommunity.com, `stats-server.py` checks the
 assertion, sets an HttpOnly `kfm_player` cookie (14 days), and redirects to
 `/players/<custom URL or SteamID64>`. While that cookie is valid the header
 shows **My profile** (from `GET /api/stats/steam/me`) and a logout
-(`POST /api/stats/steam/logout`). It does not grant access to `/statistics` —
-that dashboard still uses the separate admin password cookie.
+(`POST /api/stats/steam/logout`). Accounts with `players.admin` set also gain
+access to `/statistics` and `/admin/bans`; ordinary Steam accounts do not.
 
 `SITE_PUBLIC_URL` (default `https://kf-maniacs.com`, no trailing path) is the
 OpenID realm and return URL. The cookie is signed with `STATS_ADMIN_SECRET`, or
@@ -112,6 +147,31 @@ with `STEAM_WEB_API_KEY` when that secret is unset. If neither is set, the login
 route answers 503. Persona name and custom URL reuse the existing Web API
 lookup, so a missing key still logs the player in and sends them to
 `/players/<SteamID64>`.
+
+## Ban management for DB admins
+
+Steam accounts with `players.admin` set see **Ban management** in the account
+menu at `/admin/bans`. The page searches by player name, SteamID64 or account ID,
+filters active/expired/unbanned records, and supports timed or permanent bans,
+editing the reason/expiry, and unbanning with confirmation. Banned player profiles
+show DB admins an active-ban panel with a link to that player's filtered list.
+English and Russian are provided; other site languages use the English fallback.
+
+The API uses the same `bans` table as perkhost. Existing history is retained;
+website changes additionally record the authenticated admin and before/after values
+in `site_ban_audit`, created on stats-server startup. Writes are transactional and
+reject stale edits, duplicate active bans, and bans against DB admins. Each request
+checks the signed Steam cookie and current database admin flag; writes also require
+JSON and the `X-KFM-Admin` header. No additional credentials are configured.
+
+A website ban does not kick an already connected player. It takes effect when
+the game next checks their account. Dates entered on the page use the browser's
+local time zone and are stored in UTC. Deploy both the Nuxt app and stats-server
+with `python deploy-site.py` so the new routes and audit table are available.
+
+Regression checks: `python -B -m unittest discover -s site/tests -v` from the
+parent repository, and `npm run build` in `site/web`. The test database is an
+isolated SQLite adapter; MariaDB row-lock semantics are not covered by that suite.
 
 ## Visits (Umami)
 
@@ -153,13 +213,14 @@ turned off (`PRIVATE_MODE`, `DISABLE_TELEMETRY`, `DISABLE_UPDATES`).
 that starts the file inserts a row in `site_companion_downloads`. The
 `/statistics/` dashboard reads that table.
 
-## Secret `/statistics/` dashboard
+## Admin `/statistics/` dashboard
 
 Player sessions (who / how long / perk / map / win-loss / loss wave) land in SQLite
 via `stats-server.py`. Charts mirror Daily Players (peak + unique) and also show
 **D1/D7 retention** and **average total playtime per player per day**.
 
-No auth — unlisted URL only (do not link it from the public page).
+Requires Steam login and `players.admin` in the database. DB admins see its
+link in the account menu; the data APIs check the same authorization.
 
 **Admins:** DB admins count in every public stat the same as players (unique,
 peak, retention, playtime, pies, session names, `player_count`).

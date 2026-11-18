@@ -1932,6 +1932,21 @@ def init_schema(con) -> None:
     cur = con.cursor()
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS `site_ban_audit` (
+          `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          `ban_id` INT NOT NULL,
+          `action` VARCHAR(16) NOT NULL,
+          `actor_id` INT NOT NULL,
+          `actor_name` VARCHAR(64) NOT NULL,
+          `changed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `before_json` TEXT NULL,
+          `after_json` TEXT NOT NULL,
+          KEY `idx_site_ban_audit` (`ban_id`, `id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS `site_map_sessions` (
           `id` BIGINT NOT NULL AUTO_INCREMENT,
           `session_key` VARCHAR(128) NOT NULL,
@@ -3497,10 +3512,10 @@ def player_profile_path(steamid: str) -> str:
 
 
 def safe_next_path(raw: str) -> str:
-    """Same-site path Steam may send the browser back to. Only /statistics."""
+    """Explicit same-site destinations after Steam admin login."""
     path = unquote((raw or "").strip())
-    if path in ("/statistics", "/statistics/"):
-        return "/statistics"
+    if path.rstrip("/") in ("/statistics", "/admin/bans"):
+        return path.rstrip("/")
     return ""
 
 
@@ -5111,6 +5126,181 @@ def _active_ban(con, account_id: int):
     )
 
 
+class BanError(ValueError):
+    def __init__(self, code: str, status: int = 400):
+        super().__init__(code)
+        self.status = status
+
+
+def _ban_date(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return str(value).replace(" ", "T").rstrip("Z") + "Z"
+
+
+def _ban_record(row) -> dict[str, Any]:
+    record = {
+        "id": int(row["id"]), "accountId": int(row["account_id"]),
+        "name": str(row.get("name") or ""), "steamId": str(row.get("steam_id") or ""),
+        "reason": str(row.get("reason") or ""), "adminName": str(row.get("admin_name") or ""),
+        "adminId": int(row.get("admin_id") or 0), "bannedAt": _ban_date(row["banned_at"]),
+        "untilAt": _ban_date(row.get("until_at")), "unbannedAt": _ban_date(row.get("unbanned_at")),
+        "status": row.get("status", ""),
+    }
+    # Include stored fields, not the clock-derived status or the player's current name.
+    version = [row.get(k) for k in ("id", "account_id", "reason", "until_at", "active", "unbanned_at")]
+    record["version"] = hashlib.sha256(json.dumps(version, default=str).encode()).hexdigest()
+    return record
+
+
+_BAN_STATUS_SQL = """CASE
+    WHEN b.until_at IS NOT NULL AND b.until_at <= UTC_TIMESTAMP()
+      AND (b.active=1 OR b.unbanned_at >= b.until_at) THEN 'expired'
+    WHEN b.active=0 THEN 'revoked' ELSE 'active' END"""
+_BAN_SELECT = f"""SELECT b.*, p.last_player_name AS name, p.steam_id, {_BAN_STATUS_SQL} AS status
+    FROM bans b JOIN players p ON p.id=b.account_id"""
+
+
+def _ban_search(q: str, alias: str = "p") -> tuple[str, tuple]:
+    q = q.strip()
+    if len(q) > 100:
+        raise BanError("search_too_long")
+    if not q:
+        return "1=1", ()
+    # LOCATE treats % and _ literally, unlike LIKE. IDs are exact matches.
+    return (f"(LOCATE(%s, {alias}.last_player_name)>0 OR {alias}.steam_id=%s OR CAST({alias}.id AS CHAR)=%s)",
+            (q, q, q))
+
+
+def admin_bans(con, q: str = "", status: str = "active", page: int = 1) -> dict:
+    if status not in ("active", "expired", "revoked", "all") or not 1 <= page <= 100000:
+        raise BanError("invalid_filter")
+    where, args = _ban_search(q)
+    if status != "all":
+        where += f" AND ({_BAN_STATUS_SQL})=%s"
+        args += (status,)
+    total = _query_one(con, "SELECT COUNT(*) AS n FROM bans b JOIN players p ON p.id=b.account_id WHERE " + where, args)["n"]
+    page = min(page, max(1, (int(total) + 24) // 25))
+    rows = _query(con, _BAN_SELECT + " WHERE " + where + " ORDER BY b.id DESC LIMIT 25 OFFSET %s", args + ((page - 1) * 25,))
+    return {"bans": [_ban_record(r) for r in rows], "total": int(total), "page": page, "pageSize": 25}
+
+
+def admin_ban_players(con, q: str) -> dict:
+    if not q.strip():
+        return {"players": []}
+    where, args = _ban_search(q)
+    rows = _query(con, """SELECT p.id, p.last_player_name AS name, p.steam_id, p.admin,
+        EXISTS(SELECT 1 FROM bans b WHERE b.account_id=p.id AND b.active=1
+          AND (b.until_at IS NULL OR b.until_at>UTC_TIMESTAMP())) AS banned
+        FROM players p WHERE """ + where + " ORDER BY p.last_player_name, p.id LIMIT 20", args)
+    return {"players": [{"accountId": int(r["id"]), "name": str(r["name"] or ""),
+                         "steamId": str(r["steam_id"] or ""), "admin": bool(r["admin"]),
+                         "banned": bool(r["banned"])} for r in rows]}
+
+
+def admin_ban_history(con, ban_id: int) -> dict:
+    if ban_id <= 0:
+        raise BanError("invalid_ban")
+    rows = _query(con, "SELECT * FROM site_ban_audit WHERE ban_id=%s ORDER BY id DESC", (ban_id,))
+    return {"events": [{"id": r["id"], "action": r["action"], "actorName": r["actor_name"],
+                        "changedAt": _ban_date(r["changed_at"]),
+                        "before": json.loads(r["before_json"]) if r["before_json"] else None,
+                        "after": json.loads(r["after_json"])} for r in rows]}
+
+
+def _ban_terms(body: dict) -> tuple[str, datetime | None]:
+    reason = body.get("reason")
+    if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 120:
+        raise BanError("invalid_reason")
+    reason = reason.strip()
+    if any(ord(c) < 32 or ord(c) == 127 or c == "|" for c in reason):
+        raise BanError("invalid_reason")
+    # An explicit null means permanent; a missing field must never do so.
+    if "untilAt" not in body:
+        raise BanError("invalid_expiry")
+    until = body["untilAt"]
+    if until is not None:
+        try:
+            until = datetime.fromisoformat(until.replace("Z", "+00:00"))
+            if until.tzinfo is None:
+                raise ValueError()
+            until = until.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
+            if until <= datetime.now(timezone.utc).replace(tzinfo=None):
+                raise ValueError()
+        except (TypeError, AttributeError, ValueError, OverflowError):
+            raise BanError("invalid_expiry") from None
+    return reason, until
+
+
+def admin_change_ban(con, steamid: str, body: dict) -> dict:
+    action = body.get("action")
+    if action not in ("create", "edit", "revoke"):
+        raise BanError("invalid_action")
+    ident = body.get("accountId" if action == "create" else "banId")
+    if type(ident) is not int or not 0 < ident <= 2147483647:
+        raise BanError("invalid_player" if action == "create" else "invalid_ban")
+    reason, until = _ban_terms(body) if action != "revoke" else ("", None)
+    # Keep the shared connection locked for the whole transaction. Do not use
+    # _query here: its automatic reconnect would silently lose the transaction.
+    with LOCK:
+        ensure_db(con)
+        con.begin()
+        try:
+            cur = con.cursor()
+            cur.execute("SELECT id, last_player_name AS name, admin FROM players WHERE steam_id=%s FOR UPDATE", (steamid,))
+            actor = cur.fetchone()
+            if not actor or not actor["admin"]:
+                raise BanError("auth_required", 403)
+            before = None
+            if action == "create":
+                cur.execute("SELECT id, admin FROM players WHERE id=%s FOR UPDATE", (ident,))
+                target = cur.fetchone()
+                if not target:
+                    raise BanError("player_not_found", 404)
+                if target["admin"]:
+                    raise BanError("admin_target", 403)
+                cur.execute("SELECT id FROM bans WHERE account_id=%s AND active=1 AND (until_at IS NULL OR until_at>UTC_TIMESTAMP()) FOR UPDATE", (ident,))
+                if cur.fetchone():
+                    raise BanError("already_banned", 409)
+                cur.execute("UPDATE bans SET active=0, unbanned_at=UTC_TIMESTAMP() WHERE account_id=%s AND active=1", (ident,))
+                cur.execute("""INSERT INTO bans (account_id, until_at, duration_range, duration_value, reason, admin_name, admin_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (ident, until, 1 if until else 5,
+                     max(0, (until - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds() / 3600) if until else 0,
+                     reason, actor["name"] or steamid, actor["id"]))
+                ban_id = cur.lastrowid
+            else:
+                ban_id = ident
+                cur.execute(_BAN_SELECT + " WHERE b.id=%s FOR UPDATE", (ban_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise BanError("ban_not_found", 404)
+                before = _ban_record(row)
+                if before["status"] != "active" or body.get("version") != before["version"]:
+                    raise BanError("ban_changed", 409)
+                if action == "revoke":
+                    cur.execute("UPDATE bans SET active=0, unbanned_at=UTC_TIMESTAMP() WHERE id=%s", (ban_id,))
+                else:
+                    cur.execute("SELECT admin FROM players WHERE id=%s FOR UPDATE", (row["account_id"],))
+                    if cur.fetchone()["admin"]:
+                        raise BanError("admin_target", 403)
+                    cur.execute("UPDATE bans SET reason=%s, until_at=%s, duration_range=%s, duration_value=%s WHERE id=%s",
+                                (reason, until, 1 if until else 5,
+                                 max(0, (until - row["banned_at"]).total_seconds() / 3600) if until else 0, ban_id))
+            cur.execute(_BAN_SELECT + " WHERE b.id=%s", (ban_id,))
+            after = _ban_record(cur.fetchone())
+            cur.execute("""INSERT INTO site_ban_audit (ban_id, action, actor_id, actor_name, before_json, after_json)
+                VALUES (%s, %s, %s, %s, %s, %s)""", (ban_id, action, actor["id"], actor["name"] or steamid,
+                json.dumps(before, ensure_ascii=False) if before else None, json.dumps(after, ensure_ascii=False)))
+            con.commit()
+            return {"ok": True, "ban": after}
+        except Exception:
+            con.rollback()
+            raise
+
+
 def _player_rank(con, score: int, account_id: int) -> int | None:
     if score <= 0:
         return None
@@ -5797,7 +5987,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json_body(self, max_len: int = 100_000) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
-        if length > max_len:
+        if length < 0 or length > max_len:
             raise ValueError("body too large")
         raw = self.rfile.read(length) if length else b""
         if not raw:
@@ -6097,6 +6287,24 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(blob)
             return
+        if path in ("/api/stats/admin/bans", "/api/stats/admin/ban-players", "/api/stats/admin/ban-history"):
+            if not self._require_auth():
+                return
+            try:
+                if path.endswith("/ban-players"):
+                    payload = admin_ban_players(self.con, (qs.get("q") or [""])[0])
+                elif path.endswith("/ban-history"):
+                    payload = admin_ban_history(self.con, int((qs.get("id") or ["0"])[0]))
+                else:
+                    payload = admin_bans(self.con, (qs.get("q") or [""])[0],
+                                         (qs.get("status") or ["active"])[0], int((qs.get("page") or ["1"])[0]))
+                self._send(200, payload)
+            except ValueError as exc:
+                self._send(getattr(exc, "status", 400), {"error": str(exc) if isinstance(exc, BanError) else "invalid_filter"})
+            except Exception as exc:
+                print(f"admin bans: {exc}", flush=True)
+                self._send(500, {"error": "database_unavailable"})
+            return
         # Charts live in the Nuxt app. These APIs require a logged-in DB admin.
         if path == "/api/stats/me":
             try:
@@ -6245,6 +6453,27 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("locale") or "en"),
             )
             self._send(200 if ok else 400, {"ok": ok})
+            return
+
+        if path == "/api/stats/admin/bans":
+            if not self._require_auth():
+                return
+            # A custom header and JSON require a CORS preflight from other
+            # origins. This API grants no CORS access and accepts no form POSTs.
+            if (self.headers.get("X-KFM-Admin") != "1"
+                    or self.headers.get_content_type() != "application/json"
+                    or self.headers.get("Sec-Fetch-Site") == "cross-site"):
+                self._send(403, {"error": "invalid_request"})
+                return
+            try:
+                body = self._read_json_body(8192)
+                result = admin_change_ban(self.con, self._player_steamid(), body)
+                self._send(200, result)
+            except ValueError as exc:
+                self._send(getattr(exc, "status", 400), {"error": str(exc) if isinstance(exc, BanError) else "invalid_request"})
+            except Exception as exc:
+                print(f"admin ban change: {exc}", flush=True)
+                self._send(500, {"error": "database_unavailable"})
             return
 
         if path in ("/api/stats/admin/restart", "/api/stats/admin/map"):

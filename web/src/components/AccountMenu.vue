@@ -49,6 +49,7 @@ defineExpose({ contains });
     <div v-if="open" class="account-menu" role="menu">
       <router-link role="menuitem" :to="profileTo" @click="$emit('toggle')">{{ t("nav.profile") }}</router-link>
       <router-link v-if="admin" role="menuitem" to="/statistics" @click="$emit('toggle')">{{ t("nav.statistics") }}</router-link>
+      <router-link v-if="admin" role="menuitem" to="/admin/bans" @click="$emit('toggle')">{{ t("bans.title") }}</router-link>
       <router-link role="menuitem" to="/friends" @click="$emit('toggle')">
         {{ t("nav.friends") }}
         <span v-if="playing" class="menu-count">{{ playing }}</span>

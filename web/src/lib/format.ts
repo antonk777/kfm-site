@@ -38,7 +38,7 @@ export function mysqlTs(s: string | null): number | null {
 export function prettyMap(name: string): string {
   let n = name;
   if (/^KF-/i.test(n)) n = n.slice(3);
-  n = n.replace(/_KFM$/i, "").replace(/_/g, " ");
+  n = n.replace(/_KFM$/i, "").replace(/[-_\s]+/g, " ").trim();
   n = n.replace(/([a-z])([A-Z])/g, "$1 $2");
   return n || "—";
 }

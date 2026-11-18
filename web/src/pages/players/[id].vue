@@ -361,7 +361,7 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                   <span class="sep">·</span>
                 </template>
                 <template v-if="data.ban">
-                  <span>{{ t("hero.banned") }}</span>
+                  <span class="badge banned">{{ t("hero.banned") }}</span>
                   <span class="sep">·</span>
                 </template>
                 <template v-if="data.country">
@@ -374,7 +374,7 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                 <span class="sep">·</span>
                 <span><b>{{ t("hero.lastSeen") }}</b> {{ data.lastJoined ? fmtDate(data.lastJoined) : t("hero.never") }}</span>
               </div>
-              <div v-if="data.ban" class="meta-line" style="color: #c86a6a; margin-top: 4px">
+              <div v-if="data.ban && !steamUser?.admin" class="meta-line" style="color: #c86a6a; margin-top: 4px">
                 {{ data.ban.reason || t("hero.banned") }}
                 <template v-if="data.ban.until"> ({{ fmtDate(data.ban.until ? Math.floor(new Date(data.ban.until.replace(' ', 'T') + 'Z').getTime() / 1000) : 0) }})</template>
                 <template v-if="data.ban.adminName"> — {{ data.ban.adminName }}</template>
@@ -389,6 +389,12 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
               </div>
             </div>
           </div>
+          <aside v-if="steamUser?.admin && data.ban" class="admin-ban" :aria-label="t('bans.profileStatus')">
+            <div class="admin-ban-heading"><strong>{{ t("bans.profileStatus") }}</strong><span>{{ t("bans.admin") }}</span></div>
+            <p>{{ data.ban.reason || t("hero.banned") }}</p>
+            <dl><div><dt>{{ t("bans.until") }}</dt><dd>{{ data.ban.until ? new Date(data.ban.until.replace(' ', 'T') + 'Z').toLocaleString(i18n.locale, { dateStyle: 'medium', timeStyle: 'short' }) : t("bans.permanent") }}</dd></div><div v-if="data.ban.adminName"><dt>{{ t("bans.issuedBy") }}</dt><dd>{{ data.ban.adminName }}</dd></div></dl>
+            <router-link :to="{ path: '/admin/bans', query: { player: data.steamId || String(data.id) } }">{{ t("bans.managePlayer") }} →</router-link>
+          </aside>
           <article v-if="live" class="now-panel">
             <div class="now-shot">
               <img
@@ -450,13 +456,13 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
           <img
             v-if="c.hasMapImage"
             :src="`/maps/${encodeURIComponent(c.map)}.jpg`"
-            :alt="c.mapPretty"
+            :alt="prettyMap(c.mapPretty || c.map)"
             loading="lazy"
           />
           <div class="clear-shade"></div>
           <div class="clear-info">
             <div class="clear-text">
-              <span class="map-name">{{ c.mapPretty }}</span>
+              <span class="map-name">{{ prettyMap(c.mapPretty || c.map) }}</span>
               <span class="clear-diff">
                 <template v-for="(d, i) in clearDiffParts(c)" :key="`${c.map}-${d.difficulty}-${d.lastAt}`">
                   <template v-if="i"> · </template>
@@ -503,7 +509,7 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                     v-if="s.hasMapImage"
                     class="map-thumb"
                     :src="`/maps/${encodeURIComponent(s.map)}.jpg`"
-                    :alt="s.mapPretty"
+                    :alt="prettyMap(s.mapPretty || s.map)"
                     loading="lazy"
                   />
                   <div>
@@ -513,8 +519,8 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
                         class="map-link"
                         :to="`/sessions/${s.id}`"
                         @click.stop
-                      >{{ s.mapPretty }}</router-link>
-                      <template v-else>{{ s.mapPretty }}</template>
+                      >{{ prettyMap(s.mapPretty || s.map) }}</router-link>
+                      <template v-else>{{ prettyMap(s.mapPretty || s.map) }}</template>
                     </div>
                     <div v-if="s.server" style="color: var(--text-faint); font-size: 11.5px">{{ s.server }}</div>
                   </div>
@@ -573,6 +579,14 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
 </template>
 
 <style scoped>
+.admin-ban { margin-top: 20px; padding: 16px; border: 1px solid var(--accent-deep); border-left: 3px solid var(--accent); border-radius: 4px; background: #c612170c; }
+.admin-ban-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.admin-ban-heading strong { color: #f39393; font: 20px var(--font-display); }
+.admin-ban-heading span, .admin-ban dt { color: var(--text-dim); font-size: 12px; }
+.admin-ban p { margin: 10px 0; overflow-wrap: anywhere; }
+.admin-ban dl { display: flex; gap: 12px 28px; flex-wrap: wrap; margin: 12px 0; }
+.admin-ban dd { margin: 2px 0 0; font-size: 13px; }
+.admin-ban a { font-size: 13px; }
 .profile { position: relative; }
 .profile::before {
   content: "";
@@ -771,6 +785,14 @@ function clearDiffParts(c: { count: number; difficulties?: { difficulty: number;
   color: #ff8a8d;
   border-color: #7d2023;
   background: rgba(198, 18, 23, 0.22);
+}
+.meta-line .badge.banned {
+  color: #000;
+  background: #ff3038;
+  border-color: #ff3038;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 7px;
 }
 .meta-line .badge.veteran {
   position: relative;

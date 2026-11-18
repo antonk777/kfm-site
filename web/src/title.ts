@@ -18,6 +18,7 @@ const TITLE_KEY: Record<string, string> = {
   friends: "nav.friends",
   statistics: "nav.statistics",
   "statistics-index": "nav.statistics",
+  "admin-bans": "bans.title",
   "demo-friends": "demo.title",
   "friend-demo": "demo.title",
 };

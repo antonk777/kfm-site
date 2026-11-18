@@ -83,9 +83,8 @@ const copiedIp = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 const release = ref<ReleaseInfo | null>(null);
 const changelogText = ref("");
-const { entries: modLog } = useModChangelog();
-const logPreview = computed(() => previewGroups(modLog.value ?? [], i18n.locale, 5));
-const logHasMore = computed(() => (modLog.value?.length ?? 0) > 5);
+const { entries: modLog, summaries: modSummaries } = useModChangelog();
+const logPreview = computed(() => previewGroups(modLog.value ?? [], i18n.locale, 3, modSummaries.value));
 
 let serversTimer: ReturnType<typeof setInterval> | undefined;
 let sessionsTimer: ReturnType<typeof setInterval> | undefined;
@@ -496,15 +495,15 @@ onUnmounted(() => {
           <template v-else>{{ t(discord.stale ? "srv.discordUnavailable" : "srv.loading") }}</template>
         </p>
       </div>
-      <a class="join" :href="discord.invite || 'https://discord.gg/MJXsav9DFC'" target="_blank" rel="noopener">
+      <a class="join" href="https://kf-maniacs.com/discord" target="_blank" rel="noopener">
         {{ t("srv.discordJoin") }}
       </a>
     </article>
 
-    <template v-if="logPreview.length">
+    <template v-if="modLog?.length">
       <h2 class="section-title">{{ t("changelog.title") }}</h2>
       <ChangelogList :groups="logPreview" />
-      <p v-if="logHasMore" class="sessions-more">
+      <p class="sessions-more">
         <router-link class="sessions-cta" to="/changelog">{{ t("changelog.all") }}</router-link>
       </p>
     </template>
