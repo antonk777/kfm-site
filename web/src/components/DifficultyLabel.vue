@@ -43,7 +43,7 @@ const tone = computed(() => {
 </script>
 
 <template>
-  <span v-if="label" class="diff" :class="tone">{{ label }}</span>
+  <span v-if="label" class="diff" :class="tone"><slot />{{ label }}</span>
   <span v-else class="diff none">—</span>
 </template>
 

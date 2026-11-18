@@ -16,8 +16,8 @@ const TITLE_KEY: Record<string, string> = {
   "players-id": "nav.home",
   player: "nav.home",
   friends: "nav.friends",
-  statistics: "nav.statistics",
-  "statistics-index": "nav.statistics",
+  statistics: "nav.serverManagement",
+  "statistics-index": "nav.serverManagement",
   "admin-bans": "bans.title",
   "demo-friends": "demo.title",
   "friend-demo": "demo.title",
@@ -45,7 +45,7 @@ function pageLabel(routeName: string | symbol | null | undefined, fullPath: stri
   return t(key);
 }
 
-/** Call once from a client plugin / layout so document title tracks the route. */
+/** Sets the document title for the current route and keeps it in sync on the client. */
 export function usePageTitle(): void {
   const route = useRoute();
   const title = computed(

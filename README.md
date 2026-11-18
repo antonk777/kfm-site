@@ -213,20 +213,45 @@ turned off (`PRIVATE_MODE`, `DISABLE_TELEMETRY`, `DISABLE_UPDATES`).
 that starts the file inserts a row in `site_companion_downloads`. The
 `/statistics/` dashboard reads that table.
 
-## Admin `/statistics/` dashboard
+## Server Management
 
 Player sessions (who / how long / perk / map / win-loss / loss wave) land in SQLite
 via `stats-server.py`. Charts mirror Daily Players (peak + unique) and also show
 **D1/D7 retention** and **average total playtime per player per day**.
 
-Requires Steam login and `players.admin` in the database. DB admins see its
-link in the account menu; the data APIs check the same authorization.
+Server Management at `/statistics/` requires Steam login and `players.admin` in
+the database. DB admins see its link in the account menu. The data APIs check
+the same authorization.
 
 **Admins:** DB admins count in every public stat the same as players (unique,
 peak, retention, playtime, pies, session names, `player_count`).
 
 1. `sudo -E SKIP_FETCH=1 bash deploy.sh` (starts `kfm-stats.service`, reloads Caddy)
 2. Open `https://kf-maniacs.com/statistics/`
+
+### Staging
+
+`deploy.bat staging` builds the current workspace and deploys it to **Staging**
+at `193.5.64.167:7727` on the German VPS. Revisions use their own sequence
+(`R1S`, `R2S`, etc.) and FastDL. The deployment restarts only Staging.
+
+Staging starts with a copy of Condemned's maps and settings and uses the same
+perkhost and MariaDB for player progression. It has a separate local game tree.
+Find its card in Server Management. Join by entering `open 193.5.64.167:7727`
+in the Killing Floor console. Staging uses direct-IP access without a password.
+Its launcher disables Steam master-server advertising while retaining Steam
+authentication for player progression.
+The mod adds a Staging favorite after perkhost confirms the player's DB admin flag.
+Debug mode is always on. Staging sends live status to Server Management only,
+and its matches, player sessions, and daily counts are excluded from site stats.
+
+To provision Staging on the German VPS, run `server-scripts/install-staging.sh`
+as root with the sibling scripts present. Register its panel row on the hub and
+restart `kfm-stats.service` to load it.
+
+```text
+staging|Staging|193.5.64.167|7727|7728|staging|kfserver@10.10.0.3|DE|DE
+```
 
 ### Game server push (Unreal → site)
 

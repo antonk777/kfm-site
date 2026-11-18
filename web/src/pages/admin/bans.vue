@@ -14,7 +14,12 @@ interface BanList { bans: Ban[]; total: number; page: number; pageSize: number }
 
 const blocked = ref(false);
 const route = useRoute();
+const router = useRouter();
 const profileFilter = computed(() => typeof route.query.player === "string" ? route.query.player.slice(0, 100) : "");
+const banTarget = computed(() => typeof route.query.ban === "string" && /^[0-9]{1,20}$/.test(route.query.ban) ? route.query.ban : "");
+const loginTo = computed(() => "/api/stats/steam/login?next=" + encodeURIComponent(
+  banTarget.value ? "/admin/bans?ban=" + banTarget.value : "/admin/bans",
+));
 const access = computed(() => !steamReady.value ? "loading" : !steamUser.value?.loggedIn ? "login"
   : !steamUser.value.admin || blocked.value ? "denied" : "ready");
 const filter = ref("active");
@@ -30,6 +35,7 @@ const mode = ref<"create" | "edit" | "revoke" | "history">("create");
 const selected = ref<Player | null>(null);
 const editing = ref<Ban | null>(null);
 const reason = ref("");
+const reasonInput = ref<HTMLTextAreaElement | null>(null);
 const duration = ref("24");
 const until = ref("");
 const playerQuery = ref("");
@@ -90,6 +96,13 @@ watch(access, (value) => {
   if (value === "ready") void refresh();
   else { ++listGen; ++searchGen; ++historyGen; data.value = null; players.value = []; history.value = []; dialog.value?.close(); }
 });
+watch([access, banTarget], async ([value, target]) => {
+  if (!import.meta.client || value !== "ready" || !target) return;
+  await open("create");
+  if (banTarget.value !== target || !dialog.value?.open) return;
+  playerQuery.value = target;
+  await searchPlayers(target);
+}, { immediate: true, flush: "post" });
 onMounted(() => { void loadSteamUser(); if (access.value === "ready") void refresh(); });
 onBeforeUnmount(() => { ++listGen; ++searchGen; ++historyGen; });
 
@@ -118,7 +131,7 @@ async function open(kind: typeof mode.value, ban?: Ban) {
   history.value = [];
   formError.value = "";
   await nextTick();
-  dialog.value?.showModal();
+  if (dialog.value && !dialog.value.open) dialog.value.showModal();
   if (kind === "history" && ban) {
     const gen = historyGen;
     historyLoading.value = true;
@@ -135,10 +148,15 @@ function close() {
   ++searchGen;
   ++historyGen;
   dialog.value?.close();
+  if (banTarget.value) {
+    const query = { ...route.query };
+    delete query.ban;
+    void router.replace({ query });
+  }
   opener?.focus();
 }
 
-async function searchPlayers() {
+async function searchPlayers(exact = "") {
   const gen = ++searchGen;
   players.value = [];
   searched.value = false;
@@ -147,7 +165,17 @@ async function searchPlayers() {
   searching.value = true;
   try {
     const result = await request<{ players: Player[] }>(`/api/stats/admin/ban-players?q=${encodeURIComponent(playerQuery.value.trim())}`);
-    if (gen === searchGen) { players.value = result.players; searched.value = true; }
+    if (gen !== searchGen) return;
+    players.value = exact
+      ? result.players.filter((player) => player.steamId === exact || String(player.accountId) === exact)
+      : result.players;
+    searched.value = true;
+    const player = exact ? players.value[0] : null;
+    if (player && !player.admin && !player.banned) {
+      selected.value = player;
+      await nextTick();
+      reasonInput.value?.focus();
+    }
   } catch (e) { if (gen === searchGen) formError.value = message((e as Error).message); }
   finally { if (gen === searchGen) searching.value = false; }
 }
@@ -188,7 +216,7 @@ async function save() {
     </div>
     <div v-if="access !== 'ready'" class="panel gate">
       <p>{{ access === "loading" ? t("loading") : access === "login" ? t("dash.loginNeed") : t("dash.denied") }}</p>
-      <a v-if="access === 'login'" class="steam-btn" href="/api/stats/steam/login?next=/admin/bans"><SteamMark /> {{ t("nav.login") }}</a>
+      <a v-if="access === 'login'" class="steam-btn" :href="loginTo"><SteamMark /> {{ t("nav.login") }}</a>
     </div>
     <template v-else>
       <p class="lead">{{ t("bans.lead") }}</p>
@@ -225,7 +253,7 @@ async function save() {
     <dialog ref="dialog" aria-labelledby="ban-dialog-title" @cancel.prevent="close">
       <div class="dialog-heading"><h2 id="ban-dialog-title">{{ t(`bans.${mode === 'create' ? 'create' : mode}`) }}</h2><button type="button" :disabled="saving" :aria-label="t('bans.close')" @click="close">×</button></div>
       <template v-if="mode === 'create' && !selected">
-        <form class="player-search" @submit.prevent="searchPlayers"><label>{{ t("bans.findPlayer") }}<input v-model="playerQuery" autofocus type="search" required maxlength="100" :placeholder="t('bans.searchHint')" /></label><button :disabled="searching">{{ t("bans.searchButton") }}</button></form>
+        <form class="player-search" @submit.prevent="searchPlayers()"><label>{{ t("bans.findPlayer") }}<input v-model="playerQuery" autofocus type="search" required maxlength="100" :placeholder="t('bans.searchHint')" /></label><button :disabled="searching">{{ t("bans.searchButton") }}</button></form>
         <p v-if="searching" role="status">{{ t("loading") }}</p>
         <p v-else-if="searched && !players.length">{{ t("bans.noPlayers") }}</p>
         <ul class="player-results"><li v-for="player in players" :key="player.accountId"><button :disabled="player.admin || player.banned" @click="selected = player"><span><b>{{ player.name || `#${player.accountId}` }}</b><small>{{ player.steamId }} · #{{ player.accountId }}</small></span><span>{{ player.admin ? t("bans.admin") : player.banned ? t("bans.active") : t("bans.select") }}</span></button></li></ul>
@@ -241,7 +269,7 @@ async function save() {
         <form v-else @submit.prevent="save">
           <fieldset :disabled="saving">
             <template v-if="mode !== 'revoke'">
-              <label>{{ t("bans.reason") }}<textarea v-model="reason" required maxlength="120" rows="3" /></label><p class="hint">{{ t("bans.reasonHint") }} <span>{{ reason.length }}/120</span></p>
+              <label>{{ t("bans.reason") }}<textarea ref="reasonInput" v-model="reason" required maxlength="120" rows="3" /></label><p class="hint">{{ t("bans.reasonHint") }} <span>{{ reason.length }}/120</span></p>
               <label>{{ t("bans.duration") }}<select v-model="duration"><option v-if="editing?.untilAt" value="keep">{{ t("bans.keepExpiry") }}</option><option value="1">{{ t("bans.hour") }}</option><option value="24">{{ t("bans.day") }}</option><option value="168">{{ t("bans.week") }}</option><option value="720">{{ t("bans.month") }}</option><option value="permanent">{{ t("bans.permanent") }}</option><option value="custom">{{ t("bans.custom") }}</option></select></label>
               <label v-if="duration === 'custom'">{{ t("bans.until") }}<input v-model="until" type="datetime-local" required /></label>
               <p class="hint">{{ t("bans.timeHint") }}<template v-if="duration === 'keep'"> {{ date(editing?.untilAt || null) }}</template></p>

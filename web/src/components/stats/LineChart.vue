@@ -58,7 +58,9 @@ function extent(axis: "left" | "right"): { min: number; max: number } {
 const hasRight = computed(() => props.series.some((s) => s.axis === "right" && s.values.some((v) => v != null)));
 const left = computed(() => extent("left"));
 const right = computed(() => extent("right"));
-const innerW = computed(() => plotW.value - PAD.l - (hasRight.value ? PAD.r : 12));
+const labelLength = computed(() => props.labels.reduce((longest, label) => Math.max(longest, label.length), 0));
+const rightPad = computed(() => hasRight.value ? PAD.r : Math.max(12, Math.ceil(labelLength.value * 3.5)));
+const innerW = computed(() => plotW.value - PAD.l - rightPad.value);
 const innerH = VB_H - PAD.t - PAD.b;
 
 function xAt(i: number): number {
@@ -88,7 +90,8 @@ const yTicks = computed(() => [0, 0.25, 0.5, 0.75, 1].map((f) => left.value.min 
 const xTicks = computed(() => {
   const n = props.labels.length;
   if (!n) return [];
-  const count = Math.min(6, n);
+  const spacing = Math.max(44, labelLength.value * 7 + 8);
+  const count = Math.min(6, n, Math.max(2, Math.floor(innerW.value / spacing) + 1));
   const out: number[] = [];
   for (let i = 0; i < count; i++) out.push(Math.round((i * (n - 1)) / Math.max(1, count - 1)));
   return [...new Set(out)];

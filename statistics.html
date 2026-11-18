@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>KF Maniacs — Статистика</title>
+<title>KF Maniacs — Управление сервером</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
@@ -482,7 +482,7 @@ th{color:#888;font-weight:600}
     destroyAllCharts();
     app.innerHTML =
       "<div class='login-wrap'>" +
-      "<h1>Статистика</h1>" +
+      "<h1>Управление сервером</h1>" +
       "<p>Раздел закрыт паролем.</p>" +
       (msg ? "<p class='err'>" + esc(msg) + "</p>" : "") +
       "<form id='loginForm'>" +
@@ -1080,7 +1080,7 @@ th{color:#888;font-weight:600}
     var dayLabels = (D.days || []).map(fmtDay);
 
     app.innerHTML =
-      "<h1>Статистика</h1>" +
+      "<h1>Управление сервером</h1>" +
       "<p class='sub'>Пик и уникальные игроки за день, удержание, среднее время на игрока, скачивания Companion. Сессия = одна карта.</p>" +
       renderTabs(D) +
       "<p class='sub'>" +

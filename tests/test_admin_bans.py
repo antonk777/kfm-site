@@ -222,8 +222,40 @@ class HttpTests(unittest.TestCase):
 
     def test_login_return_path_is_allowlisted(self):
         self.assertEqual(stats.safe_next_path("/admin/bans/"), "/admin/bans")
-        for value in ("//evil.example/admin/bans", "https://evil.example", "/admin/bans?next=//evil", "/admin/bans/../outside"):
+        self.assertEqual(stats.safe_next_path("/admin/bans?ban=" + PLAYER), "/admin/bans?ban=" + PLAYER)
+        self.assertEqual(stats.safe_next_path("/statistics/meatgrinder/"), "/statistics/meatgrinder")
+        for value in ("//evil.example/admin/bans", "https://evil.example", "/admin/bans?next=//evil",
+                      "/admin/bans?ban=1&next=//evil", "/admin/bans/../outside", "/statistics/unknown"):
             self.assertEqual(stats.safe_next_path(value), "")
+
+
+class DashboardTests(unittest.TestCase):
+    def test_concurrent_peak_counts_overlap_and_splits_at_midnight(self):
+        start = stats.day_start_ts(20261001)
+        midnight = start + 86400
+        intervals = [
+            (start - 10, start + 40), (start + 20, start + 40),
+            (start + 40, start + 60), (start + 45, start + 70),
+            (midnight - 5, midnight + 10), (midnight, midnight + 20),
+        ]
+        self.assertEqual(stats.concurrent_peaks(intervals, start, midnight + 30), {20261001: 2, 20261002: 2})
+
+    def test_tick_average_is_frame_weighted_and_expires(self):
+        samples = [{"ts": 20, "ms": 3000, "count": 150}, {"ts": 30, "ms": 2000, "count": 50}]
+        self.assertEqual(stats.tick_averages(samples, [19, 20, 30, 80, 90]), [None, 20.0, 25.0, 40.0, None])
+
+    def test_playtime_excludes_dates_before_november_6(self):
+        class PlaytimeRows:
+            def cursor(self):
+                return self
+
+            def execute(self, sql, params):
+                assert params[0] == 20261106
+
+            def fetchall(self):
+                return [{"total": 360}, {"total": 480}]
+
+        self.assertEqual(stats.avg_playtime_by_day(PlaytimeRows(), [20261105, 20261106]), [None, 420])
 
 
 if __name__ == "__main__":

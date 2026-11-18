@@ -44,7 +44,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections import deque
+from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,6 +54,9 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlencode, urlparse
 HOST = os.environ.get("STATS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STATS_PORT", "8765"))
 DAYS = max(30, int(os.environ.get("STATS_DAYS", "180")))
+PLAYTIME_START_DAY = 20261106
+ALL_SERVERS_SNAPSHOT = "*"
+STAGING_SERVER = "staging"
 LOCK = threading.RLock()
 # Public companion URLs. /download is the stable name; the versioned exe is
 # what the landing page links to.
@@ -187,8 +190,8 @@ def load_panel() -> None:
     id|label|public-host|game-port|query-port|systemd-slot|ssh-user@wg-ip|region|country
 
     An empty ssh field means the slot runs on this machine. A ssh target is
-    another VPS: its host-wide CPU, memory and network are pulled over that
-    SSH session for the statistics page. `region` is the short chart label
+    another VPS: the SSH collector reads host totals and, for a shared VPS,
+    each game service's process counters. `region` is the short chart label
     (EU, US). `country` is the flag on the public monitor (RU, US, DE).
     The EU chart group is the Moscow host; its flag is RU when country is empty.
     """
@@ -271,8 +274,8 @@ def panel_by_id(sid: str) -> PanelServer | None:
 
 
 def tracked_server_names() -> tuple[str, ...]:
-    """Slots stored in the DB: the original four, plus any regional panel ids."""
-    extra = tuple(s.id for s in panel_servers() if s.id not in KNOWN_SERVERS)
+    """Slots that contribute to session and daily statistics."""
+    extra = tuple(s.id for s in panel_servers() if s.id not in KNOWN_SERVERS and s.id != STAGING_SERVER)
     return KNOWN_SERVERS + extra
 
 
@@ -284,6 +287,7 @@ _LOAD_PREV: dict[str, Any] = {}
 # host id -> samples pulled from another VPS (WireGuard SSH). hub host stays in _LOAD_SAMPLES.
 _REMOTE_SAMPLES: dict[str, list[dict[str, Any]]] = {}
 _REMOTE_PREV: dict[str, dict[str, Any]] = {}
+_REMOTE_PROC_SAMPLES: dict[str, list[dict[str, Any]]] = {}
 REMOTE_LOAD_STALE_SEC = 20.0
 _PROC_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
 _PROC_PREV: dict[str, dict[str, Any]] = {}
@@ -292,15 +296,15 @@ _ACCT_JUMP_CHECK_TS = 0.0
 _LIVE_LOCK = threading.Lock()
 # server_name -> latest live snapshot from mutator (or DB fallback)
 _LIVE: dict[str, dict[str, Any]] = {}
-# Per-slot tick history from live pushes (rolling peak window).
+# Per-slot frame counts and total tick time from live pushes.
 _TICK_SAMPLES: dict[str, list[dict[str, Any]]] = {s: [] for s in KNOWN_SERVERS}
+_LIVE_DAILY_PEAK: dict[int, int] = {}
 LIVE_STALE_SEC = 45.0
 # Live pushes from mod builds without `diff`: server -> (map, checked_at, difficulty).
 _DIFF_FALLBACK: dict[str, tuple[str, int, float]] = {}
 DIFF_FALLBACK_SEC = 60
-# Peak health / badge uses last N seconds; keep enough history for the load chart too.
-TICK_PEAK_WINDOW_SEC = 300  # 5 minutes
-TICK_KEEP_SEC = TICK_PEAK_WINDOW_SEC + int(LOAD_INTERVAL_SEC * LOAD_KEEP) + 30
+TICK_AVG_WINDOW_SEC = 60
+TICK_KEEP_SEC = TICK_AVG_WINDOW_SEC + int(LOAD_INTERVAL_SEC * LOAD_KEEP) + 30
 
 
 def _read_proc_stat() -> tuple[int, int]:
@@ -445,10 +449,8 @@ def _slot_net_bytes() -> dict[str, int]:
     out = _read_port_bytes("KFM_ACCT_OUT")
     result: dict[str, int] = {}
     for slot, ports in SLOT_PORTS.items():
-        total = 0
-        for port in ports:
-            total += int(inn.get(port, 0)) + int(out.get(port, 0))
-        result[slot] = total
+        if ports and all(port in inn and port in out for port in ports):
+            result[slot] = sum(inn[port] + out[port] for port in ports)
     return result
 
 
@@ -488,9 +490,9 @@ def _resolve_slot_pid(slot: str) -> int | None:
 
 def _read_pid_cpu_jiffies(pid: int) -> int | None:
     try:
-        parts = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
-        # utime=14 stime=15 (1-based) → indices 13,14
-        return int(parts[13]) + int(parts[14])
+        # The parenthesized command name can contain spaces; state is field 3.
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        return int(fields[11]) + int(fields[12])
     except (OSError, IndexError, ValueError):
         return None
 
@@ -550,14 +552,44 @@ def _sample_host_load() -> dict[str, Any] | None:
     return sample
 
 
+def _process_load_sample(
+    slot: str, prev: dict[str, Any] | None, cur: dict[str, Any],
+    rss_kb: int, mem_total_kb: int, hz: int, now: float,
+) -> dict[str, Any] | None:
+    if not prev or prev["pid"] != cur["pid"] or prev.get("start") != cur.get("start"):
+        return None
+    if cur["jiffies"] is None or prev["jiffies"] is None:
+        return None
+    d_proc = cur["jiffies"] - prev["jiffies"]
+    d_host = cur["host_total"] - prev["host_total"]
+    dt = cur["ts"] - prev["ts"]
+    if dt <= 0 or hz <= 0 or d_proc < 0 or d_host <= 0:
+        return None
+    net = cur.get("net")
+    last_net = prev.get("net")
+    rate = None
+    if net is not None and last_net is not None and net >= last_net:
+        rate = round((net - last_net) * 8 / dt / 1_000_000, 3)
+    return {
+        "ts": int(now), "scope": "process", "server": slot, "pid": cur["pid"],
+        "cpu": min(100.0, round(100.0 * d_proc / d_host, 2)),
+        "core_pct": round(100.0 * d_proc / hz / dt, 2),
+        "cpu_seconds": cur["jiffies"] // hz,
+        "mem_mb": round(rss_kb / 1024, 1),
+        "mem": round(100.0 * rss_kb / mem_total_kb, 2) if mem_total_kb > 0 else None,
+        "net_mbps": rate,
+    }
+
+
 def _sample_slot_load(now: float, host_total: int, mem_total_kb: int) -> None:
     """Append one sample per known slot (process CPU/RSS + UDP port Mbps)."""
     net_by_slot = _slot_net_bytes()
+    hz = os.sysconf("SC_CLK_TCK")
     for slot in KNOWN_SERVERS:
         pid = _resolve_slot_pid(slot)
         proc_j = _read_pid_cpu_jiffies(pid) if pid else None
         rss_kb = _read_pid_rss_kb(pid) if pid else None
-        net_b = int(net_by_slot.get(slot, 0))
+        net_b = net_by_slot.get(slot)
         prev = _PROC_PREV.get(slot)
         _PROC_PREV[slot] = {
             "pid": pid,
@@ -566,33 +598,11 @@ def _sample_slot_load(now: float, host_total: int, mem_total_kb: int) -> None:
             "net": net_b,
             "ts": now,
         }
-        if not prev or proc_j is None or rss_kb is None or prev.get("jiffies") is None:
+        if rss_kb is None:
             continue
-        if prev.get("pid") != pid:
+        sample = _process_load_sample(slot, prev, _PROC_PREV[slot], rss_kb, mem_total_kb, hz, now)
+        if sample is None:
             continue
-        d_proc = proc_j - int(prev["jiffies"])
-        d_host = host_total - int(prev["host_total"])
-        if d_host <= 0 or d_proc < 0:
-            cpu = 0.0
-        else:
-            cpu = max(0.0, min(100.0, round(100.0 * d_proc / d_host, 2)))
-        mem_pct = (
-            round(100.0 * rss_kb / mem_total_kb, 2) if mem_total_kb > 0 else 0.0
-        )
-        mem_mb = round(rss_kb / 1024.0, 1)
-        dt = max(0.001, now - float(prev["ts"]))
-        d_net = max(0, net_b - int(prev["net"]))
-        net_mbps = round((d_net * 8.0) / dt / 1_000_000.0, 3)
-        sample = {
-            "ts": int(now),
-            "cpu": cpu,
-            "mem": mem_pct,
-            "mem_mb": mem_mb,
-            "net_mbps": net_mbps,
-            "pid": pid,
-            "scope": "process",
-            "server": slot,
-        }
         with _LOAD_LOCK:
             buf = _PROC_SAMPLES.setdefault(slot, [])
             buf.append(sample)
@@ -667,6 +677,12 @@ def _group_for_server(server: str) -> dict[str, Any] | None:
     return None
 
 
+def _fresh_load_sample(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if samples and samples[-1].get("cpu") is not None and time.time() - samples[-1]["ts"] <= REMOTE_LOAD_STALE_SEC:
+        return samples[-1]
+    return None
+
+
 def _load_chart(
     samples: list[dict[str, Any]],
     *,
@@ -675,13 +691,7 @@ def _load_chart(
     label: str,
     host_id: str,
 ) -> dict[str, Any]:
-    now_sample = samples[-1] if samples else None
-    if (
-        host_id != "local"
-        and now_sample is not None
-        and time.time() - float(now_sample["ts"]) > REMOTE_LOAD_STALE_SEC
-    ):
-        now_sample = None
+    now_sample = _fresh_load_sample(samples)
     return {
         "interval_sec": LOAD_INTERVAL_SEC,
         "scope": scope,
@@ -694,17 +704,44 @@ def _load_chart(
         "mem_mb": [s.get("mem_mb") for s in samples],
         "net_mbps": [s["net_mbps"] for s in samples],
         "now": now_sample,
-        "tick_ms": [],
-        "peak_tick_ms": [],
-        "peakTick": -1,
-        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
+        "avg_tick_ms": [],
     }
 
 
 # Reads /proc on a remote VPS and prints one JSON counter line per interval.
 # The hub turns two lines into the same CPU % / Mbit/s sample as the local host.
 _REMOTE_COUNTER_SCRIPT = r"""
-import json, sys, time
+import json, os, subprocess, sys, time
+from pathlib import Path
+
+def processes():
+    if not units:
+        return {}
+    props = "Id,MainPID,IPAccounting,IPIngressBytes,IPEgressBytes"
+    try:
+        result = subprocess.run(["systemctl", "show", "--property=" + props, *units], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    rows = {}
+    for block in result.stdout.strip().split("\n\n"):
+        fields = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        slot = units.get(fields.get("Id"))
+        try:
+            pid = int(fields["MainPID"])
+            if not slot or not pid:
+                continue
+            # Field 3 follows the parenthesized command name. RSS is measured in pages.
+            stat = (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+            incoming = fields.get("IPIngressBytes", "")
+            outgoing = fields.get("IPEgressBytes", "")
+            net = None
+            if fields.get("IPAccounting") == "yes" and incoming.isdecimal() and outgoing.isdecimal():
+                net = int(incoming) + int(outgoing)
+            rows[slot] = {"pid": pid, "start": int(stat[19]), "jiffies": int(stat[11]) + int(stat[12]),
+                          "rss_kb": int(stat[21]) * os.sysconf("SC_PAGE_SIZE") // 1024, "net": net}
+        except (OSError, KeyError, ValueError, IndexError):
+            continue
+    return rows
 
 def counters():
     with open("/proc/stat", encoding="utf-8") as fh:
@@ -735,7 +772,8 @@ def counters():
         cols = rest.split()
         if len(cols) >= 9:
             net += int(cols[0]) + int(cols[8])
-    return {"idle": idle, "total": total, "mem": mem, "net": net}
+    return {"idle": idle, "total": total, "mem": mem, "net": net, "mem_total": mem_total,
+            "processes": processes(), "clock": time.monotonic(), "hz": os.sysconf("SC_CLK_TCK")}
 
 interval = 2.0
 if len(sys.argv) > 1:
@@ -754,7 +792,7 @@ while True:
 """
 
 
-def _accept_remote_counters(host_id: str, msg: dict[str, Any]) -> dict[str, Any] | None:
+def _accept_remote_counters(host_id: str, msg: dict[str, Any], slots: tuple[str, ...] = ()) -> dict[str, Any] | None:
     try:
         idle = int(msg["idle"])
         total = int(msg["total"])
@@ -763,9 +801,21 @@ def _accept_remote_counters(host_id: str, msg: dict[str, Any]) -> dict[str, Any]
     except (KeyError, TypeError, ValueError):
         return None
     now = time.time()
-    state, sample = _host_sample_from_counters(
-        _REMOTE_PREV.get(host_id), idle, total, mem, net_b, now
-    )
+    previous = _REMOTE_PREV.get(host_id) or {}
+    state, sample = _host_sample_from_counters(previous, idle, total, mem, net_b, now)
+    proc_state = {}
+    proc_samples = {}
+    for slot in slots:
+        counters = msg.get("processes", {}).get(slot)
+        proc = None
+        if counters:
+            cur = dict(counters, host_total=total, ts=msg["clock"])
+            proc_state[slot] = cur
+            proc = _process_load_sample(slot, previous.get("processes", {}).get(slot), cur,
+                                        cur["rss_kb"], msg["mem_total"], msg["hz"], now)
+        # Preserve chart gaps on stop/restart instead of displaying the old PID's values.
+        proc_samples[slot] = proc or {"ts": int(now), "cpu": None, "mem": None, "net_mbps": None}
+    state["processes"] = proc_state
     _REMOTE_PREV[host_id] = state
     if sample is None:
         return None
@@ -775,6 +825,10 @@ def _accept_remote_counters(host_id: str, msg: dict[str, Any]) -> dict[str, Any]
         buf.append(sample)
         if len(buf) > LOAD_KEEP:
             del buf[: len(buf) - LOAD_KEEP]
+        for slot, row in proc_samples.items():
+            history = _REMOTE_PROC_SAMPLES.setdefault(slot, [])
+            history.append(row)
+            del history[:-LOAD_KEEP]
     return sample
 
 
@@ -795,8 +849,8 @@ def _ssh_argv(target: str, *extra: str) -> list[str]:
     ]
 
 
-def remote_load_loop(host_id: str, target: str) -> None:
-    """Keep one SSH session to a remote VPS and store its host load samples."""
+def remote_load_loop(host_id: str, target: str, units: dict[str, str]) -> None:
+    """One SSH stream per VPS, including each game process on shared machines."""
     last_log = 0.0
 
     def log(msg: str) -> None:
@@ -836,7 +890,8 @@ def remote_load_loop(host_id: str, target: str) -> None:
                 bufsize=1,
             )
             assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-            proc.stdin.write(_REMOTE_COUNTER_SCRIPT)
+            _REMOTE_PREV.pop(host_id, None)
+            proc.stdin.write("units = " + repr(units) + "\n" + _REMOTE_COUNTER_SCRIPT)
             proc.stdin.close()
 
             def _drain(pipe: Any = proc.stderr, box: list[str] = err_parts) -> None:
@@ -860,7 +915,7 @@ def remote_load_loop(host_id: str, target: str) -> None:
                 if msg.get("error"):
                     log(f"kfm-stats: remote load {host_id}: {msg['error']}")
                     continue
-                sample = _accept_remote_counters(host_id, msg)
+                sample = _accept_remote_counters(host_id, msg, tuple(units.values()))
                 if sample is not None and not announced:
                     print(
                         f"kfm-stats: remote load {host_id} via {target} "
@@ -900,9 +955,12 @@ def start_remote_load_samplers() -> None:
         print(f"kfm-stats: remote VPS load off, missing {key}", flush=True)
         return
     for group in groups:
+        units = {}
+        if len(group["servers"]) > 1:
+            units = {_unit_name(spec.slot): spec.id for spec in panel_servers() if spec.id in group["servers"]}
         threading.Thread(
             target=remote_load_loop,
-            args=(str(group["id"]), str(group["ssh"])),
+            args=(str(group["id"]), str(group["ssh"]), units),
             name=f"stats-load-{group['id']}",
             daemon=True,
         ).start()
@@ -910,6 +968,7 @@ def start_remote_load_samplers() -> None:
 
 def build_load_series(server: str | None = None) -> dict[str, Any]:
     groups = host_groups()
+    slots = tuple(dict.fromkeys(KNOWN_SERVERS + panel_ids()))
     remote: dict[str, Any] | None = None
     if server:
         group = _group_for_server(server)
@@ -922,8 +981,9 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
             label = ""
             host_id = "local"
         elif remote is not None:
-            samples = list(_REMOTE_SAMPLES.get(str(remote["id"])) or [])
-            scope = "host"
+            shared = len(remote["servers"]) > 1
+            samples = list(_REMOTE_PROC_SAMPLES.get(server, []) if shared else _REMOTE_SAMPLES.get(str(remote["id"]), []))
+            scope = "process" if shared else "host"
             label = _vps_label(remote)
             host_id = str(remote["id"])
         else:
@@ -934,47 +994,24 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
             label = _vps_label(local)
             host_id = "local"
         host_rows: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        slot_loads = {slot: {"scope": "process", "now": _fresh_load_sample(_PROC_SAMPLES.get(slot, []))}
+                      for slot in slots}
         for group in groups:
             if group["id"] == "local":
                 host_samples = list(_LOAD_SAMPLES)
             else:
                 host_samples = list(_REMOTE_SAMPLES.get(str(group["id"])) or [])
             host_rows.append((group, host_samples))
+            for slot in group["servers"]:
+                if group.get("ssh") and len(group["servers"]) > 1:
+                    slot_loads[slot] = {"scope": "process", "now": _fresh_load_sample(_REMOTE_PROC_SAMPLES.get(slot, []))}
+                elif group["id"] != "local" or slot not in _PROC_SAMPLES:
+                    slot_loads[slot] = {"scope": "host", "now": _fresh_load_sample(host_samples)}
     out = _load_chart(samples, scope=scope, server=server, label=label, host_id=host_id)
     if server:
         with _LIVE_LOCK:
             ticks = list(_TICK_SAMPLES.get(server) or [])
-        # Forward-fill window tick + rolling 5-min peak onto load sample timestamps.
-        tick_ms: list[float | None] = []
-        peak_ms: list[float | None] = []
-        ti = 0
-        last: float | None = None
-        lo = 0
-        win_max = -1
-        # Multiset of ms in [ts - window, ts] via two pointers (ticks sorted by ts).
-        win: deque[int] = deque()
-        for ts in out["ts"]:
-            tsi = int(ts)
-            while ti < len(ticks) and int(ticks[ti]["ts"]) <= tsi:
-                ms = int(ticks[ti]["ms"])
-                last = float(ms)
-                win.append(ms)
-                if ms >= win_max:
-                    win_max = ms
-                ti += 1
-            cutoff = tsi - TICK_PEAK_WINDOW_SEC
-            while lo < ti and int(ticks[lo]["ts"]) < cutoff:
-                dropped = win.popleft()
-                lo += 1
-                if dropped == win_max:
-                    win_max = max(win) if win else -1
-            tick_ms.append(last)
-            peak_ms.append(float(win_max) if win_max >= 0 else None)
-        out["tick_ms"] = tick_ms
-        out["peak_tick_ms"] = peak_ms
-        out["tick_ts"] = [int(t["ts"]) for t in ticks]
-        out["tick_raw"] = [int(t["ms"]) for t in ticks]
-        out["peakTick"] = _peak_tick_from_samples(ticks)
+        out["avg_tick_ms"] = tick_averages(ticks, out["ts"])
         out["live"] = get_live_status(server)
     out["hosts"] = [
         _load_chart(
@@ -987,9 +1024,8 @@ def build_load_series(server: str | None = None) -> dict[str, Any]:
         for group, host_samples in host_rows
     ]
     # Always include all slots so tab traffic-lights stay current.
-    out["liveAll"] = {
-        s: get_live_status(s) for s in tuple(dict.fromkeys(KNOWN_SERVERS + panel_ids()))
-    }
+    out["liveAll"] = {s: get_live_status(s) for s in slots}
+    out["slotLoad"] = slot_loads
     return out
 
 
@@ -999,29 +1035,25 @@ def _prune_tick_buf(buf: list[dict[str, Any]], now: int | float) -> None:
         del buf[0]
 
 
-def _peak_tick_from_samples(
-    ticks: list[dict[str, Any]],
-    *,
-    now: int | float | None = None,
-    window_sec: int = TICK_PEAK_WINDOW_SEC,
-) -> int:
-    if not ticks:
-        return -1
-    t_now = int(now if now is not None else now_ts())
-    cutoff = t_now - int(window_sec)
-    peak = -1
-    for t in ticks:
-        if int(t["ts"]) < cutoff:
-            continue
-        ms = int(t["ms"])
-        if ms > peak:
-            peak = ms
-    return peak
-
-
-def _peak_tick_for(server: str) -> int:
-    with _LIVE_LOCK:
-        return _peak_tick_from_samples(list(_TICK_SAMPLES.get(server) or []))
+def tick_averages(ticks, timestamps) -> list[float | None]:
+    """Frame-weighted average of reported batches ending in each trailing minute."""
+    window = deque()
+    samples = iter(ticks)
+    sample = next(samples, None)
+    total_ms = frames = 0
+    averages = []
+    for ts in timestamps:
+        while sample and sample["ts"] <= ts:
+            total_ms += sample["ms"]
+            frames += sample["count"]
+            window.append(sample)
+            sample = next(samples, None)
+        while window and window[0]["ts"] <= ts - TICK_AVG_WINDOW_SEC:
+            expired = window.popleft()
+            total_ms -= expired["ms"]
+            frames -= expired["count"]
+        averages.append(round(total_ms / frames, 1) if frames else None)
+    return averages
 
 
 def _parse_live_players(raw: str) -> list[dict[str, Any]]:
@@ -1069,22 +1101,21 @@ def ingest_live(con, p: dict[str, Any]) -> None:
     players = _parse_live_players(str(p.get("players") or ""))
     online = len(players)
     map_name = str(p.get("map") or p.get("map_name") or "")[:64]
-    tick_ms = int(num(p.get("worstTick"), -1))
+    tick_ms = int(num(p.get("tickTotalMs"), -1))
+    tick_count = int(num(p.get("tickCount"), 0))
+    rev = str(p.get("revision") or "")
     ts = now_ts()
+    record_history = server != STAGING_SERVER
+    key = str(p.get("key") or p.get("session_key") or "").strip()
     # Lobby sends no key. Anything this server still has open belongs to the
     # process that died. A keyed push keeps that match and closes older ones.
-    close_replaced_sessions(
-        con,
-        server,
-        str(p.get("key") or p.get("session_key") or ""),
-        ts,
-    )
+    if record_history:
+        close_replaced_sessions(con, server, key, ts)
     difficulty = float(num(p.get("diff"), 0.0))
-    if difficulty <= 0 and map_name:
+    if record_history and difficulty <= 0 and map_name:
         difficulty = _session_difficulty(con, server, map_name, ts)
     # Sticky-mark the open map play when debug is on (or toggled mid-match).
-    if _payload_debug(p):
-        key = str(p.get("key") or p.get("session_key") or "").strip()
+    if record_history and _payload_debug(p):
         if key:
             try:
                 with LOCK:
@@ -1115,21 +1146,39 @@ def ingest_live(con, p: dict[str, Any]) -> None:
         "online": online,
         "maxPlayers": int(num(p.get("maxPlayers"), 0)),
         "players": players,
-        "worstTick": tick_ms,
+        "revision": rev if re.fullmatch(r"[0-9]{1,9}S?", rev) else "",
         "ts": ts,
         "source": "live",
         # Empty in the lobby. The server card links only when this key has a row.
-        "sessionKey": str(p.get("key") or p.get("session_key") or "").strip(),
+        "sessionKey": key if record_history else "",
     }
     with _LIVE_LOCK:
-        if tick_ms >= 0:
+        if 0 < tick_count <= 100000 and 0 < tick_ms < tick_count * 5000:
             buf = _TICK_SAMPLES.setdefault(server, [])
-            buf.append({"ts": ts, "ms": tick_ms})
+            buf.append({"ts": ts, "ms": tick_ms, "count": tick_count})
             _prune_tick_buf(buf, ts)
-        peak = _peak_tick_from_samples(_TICK_SAMPLES.get(server) or [], now=ts)
-        snap["peakTick"] = peak
-        snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
         _LIVE[server] = snap
+        if not record_history:
+            return
+        total_online = sum(
+            row["online"] for slot, row in _LIVE.items() if slot != STAGING_SERVER and 0 <= ts - row["ts"] <= 10
+        )
+    day = day_from_ts(ts)
+    with LOCK:
+        if day not in _LIVE_DAILY_PEAK:
+            # Keep the earlier peak when concurrent reporting starts partway through a day.
+            total_online = max(total_online, peak_by_day(con, [day])[0] or 0)
+        if total_online > _LIVE_DAILY_PEAK.get(day, -1):
+            con.cursor().execute(
+                """
+                INSERT INTO `site_daily_snapshot` (`day`, `server_name`, `peak`, `unique_count`, `updated_at`)
+                VALUES (%s, %s, %s, 0, %s)
+                ON DUPLICATE KEY UPDATE `peak`=GREATEST(`peak`, VALUES(`peak`)), `updated_at`=VALUES(`updated_at`)
+                """,
+                (day, ALL_SERVERS_SNAPSHOT, total_online, ts),
+            )
+            _LIVE_DAILY_PEAK.clear()
+            _LIVE_DAILY_PEAK[day] = total_online
 
 
 def _session_difficulty(con, server: str, map_name: str, ts: int) -> float:
@@ -1202,7 +1251,6 @@ def _live_from_db(con, server: str) -> dict[str, Any] | None:
         "difficulty": float(row["difficulty"] or 0),
         "online": len(players),
         "players": players,
-        "worstTick": -1,
         "ts": int(row["started_at"] or 0),
         "source": "db",
         "sessionId": int(row["id"]),
@@ -1215,62 +1263,35 @@ TICK_WARN_MS = 100
 TICK_BAD_MS = 250
 
 
-def tick_health(
-    tick_ms: int | float | None,
-    peak_ms: int | float | None = -1,
-    *,
-    stale: bool = False,
-) -> dict[str, Any]:
-    """Traffic-light health from tick latency (current + 5-min peak)."""
-    try:
-        t = int(tick_ms) if tick_ms is not None else -1
-    except (TypeError, ValueError):
-        t = -1
-    try:
-        pk = int(peak_ms) if peak_ms is not None else -1
-    except (TypeError, ValueError):
-        pk = -1
-    if stale or (t < 0 and pk < 0):
-        return {
-            "level": "unknown",
-            "label": "Нет данных",
-            "tickMs": t if t >= 0 else None,
-            "peakMs": pk if pk >= 0 else None,
-            "peakWindowSec": TICK_PEAK_WINDOW_SEC,
-        }
-    # Score by the worse of current window and recent peak.
-    score = max(t, pk)
-    if score >= TICK_BAD_MS:
+def tick_health(avg_ms: float | None) -> dict[str, Any]:
+    """Traffic-light health from the last minute's average tick time."""
+    if avg_ms is None:
+        level, label = "unknown", "Нет данных"
+    elif avg_ms >= TICK_BAD_MS:
         level, label = "bad", "Плохо"
-    elif score >= TICK_WARN_MS:
+    elif avg_ms >= TICK_WARN_MS:
         level, label = "warn", "Средне"
-    elif score >= TICK_OK_MS:
+    elif avg_ms >= TICK_OK_MS:
         level, label = "ok", "Норма"
     else:
         level, label = "good", "Отлично"
     return {
         "level": level,
         "label": label,
-        "tickMs": t if t >= 0 else None,
-        "peakMs": pk if pk >= 0 else None,
-        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
+        "avgTickMs": avg_ms,
     }
 
 
-def _attach_health(snap: dict[str, Any]) -> dict[str, Any]:
-    """Health badge plus the Steam listing poll for the /statistics live card."""
+def _attach_health(snap: dict[str, Any], avg_ms: float | None = None) -> dict[str, Any]:
+    """Health and Steam listing for the Server Management card."""
     snap = dict(snap)
-    snap["steam"] = steam_listing_for(str(snap.get("server") or ""))
-    peak = snap.get("peakTick", -1)
-    if peak is None or int(peak) < 0:
-        peak = snap.get("worstTick", -1)
-    snap["peakTick"] = int(peak) if peak is not None and int(peak) >= 0 else -1
-    snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
-    snap["health"] = tick_health(
-        snap.get("worstTick"),
-        snap["peakTick"],
-        stale=bool(snap.get("stale")),
-    )
+    steam = steam_listing_for(str(snap.get("server") or ""))
+    snap["steam"] = steam
+    if not snap.get("revision") and steam:
+        tagged = re.search(r"\|\s*Beta\s+R([0-9]{1,9}S?)\s*$", steam.get("name") or "", re.I)
+        if tagged:
+            snap["revision"] = tagged.group(1).upper()
+    snap["health"] = tick_health(None if snap.get("stale") else avg_ms)
     return snap
 
 
@@ -1284,9 +1305,6 @@ def get_live_status(server: str) -> dict[str, Any]:
         "difficulty": 0,
         "online": 0,
         "players": [],
-        "worstTick": -1,
-        "peakTick": -1,
-        "peakWindowSec": TICK_PEAK_WINDOW_SEC,
         "ts": 0,
         "source": "none",
         "stale": True,
@@ -1300,31 +1318,26 @@ def get_live_status(server: str) -> dict[str, Any]:
                 snap = dict(_LIVE.get(old) or {})
             if not ticks:
                 ticks = list(_TICK_SAMPLES.get(old) or [])
-    peak = _peak_tick_from_samples(ticks)
     if snap:
-        age = now_ts() - int(snap.get("ts") or 0)
+        now = now_ts()
+        age = now - int(snap.get("ts") or 0)
         snap["stale"] = age > LIVE_STALE_SEC
-        snap["peakTick"] = peak
-        snap["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
         if not snap["stale"]:
-            return _attach_health(snap)
+            return _attach_health(snap, tick_averages(ticks, [now])[0])
     # Fall back to DB if live push missing/stale (needs Handler.con).
     con = getattr(Handler, "con", None)
-    if con is not None:
+    if con is not None and server != STAGING_SERVER:
         try:
             with LOCK:
                 ensure_db(con)
                 db = _live_from_db(con, server)
             if db:
                 db["stale"] = True
-                db["peakTick"] = peak
-                db["peakWindowSec"] = TICK_PEAK_WINDOW_SEC
                 return _attach_health(db)
         except Exception:  # noqa: BLE001
             pass
     if snap:
         return _attach_health(snap)
-    empty["peakTick"] = peak
     return _attach_health(empty)
 
 
@@ -1616,6 +1629,8 @@ def build_public_servers() -> dict[str, Any]:
     """
     out = []
     for spec in panel_servers():
+        if spec.slot == "staging":
+            continue
         slot = spec.id
         live = get_live_status(slot)
         port = spec.port
@@ -2393,7 +2408,7 @@ def ensure_map_session(con, p: dict[str, Any]) -> int:
     day = int(num(p.get("day"), day_from_ts(started)))
     difficulty = float(num(p.get("diff"), num(p.get("difficulty"), 0.0)))
     server_name = server_from_payload(p)
-    debug = 1 if _payload_debug(p) else 0
+    debug = int(_payload_debug(p))
     cur = con.cursor()
     cur.execute(
         """
@@ -2809,6 +2824,8 @@ def server_name_variants(server: str) -> tuple[str, ...]:
 
 
 def server_sql(server: str | None, col: str = "`server_name`") -> tuple[str, tuple[Any, ...]]:
+    if server == STAGING_SERVER:
+        return " AND 1=0", ()
     if server:
         names = server_name_variants(server)
         if len(names) == 1:
@@ -2858,6 +2875,8 @@ def list_servers(con) -> list[dict[str, Any]]:
     counts = {str(r["name"]): int(r["c"]) for r in cur.fetchall()}
     out = []
     for name in panel_ids():
+        if name == STAGING_SERVER:
+            continue
         c = sum(int(counts.get(n, 0)) for n in server_name_variants(name))
         out.append({"name": name, "c": c})
     return out
@@ -2869,6 +2888,8 @@ def day_list(
     extra_days: list[int] | None = None,
     server: str | None = None,
 ) -> list[int]:
+    if server == STAGING_SERVER:
+        return []
     cur = con.cursor()
     srv_sql, srv_args = server_sql(server)
     if server:
@@ -2897,11 +2918,11 @@ def day_list(
               UNION
               SELECT `day` FROM `site_daily_snapshot`
               WHERE `day` >= %s AND (
-                `server_name` IN ({placeholders}) OR `server_name`=''
+                `server_name` IN ({placeholders}) OR `server_name`='' OR `server_name`=%s
               )
             ) t ORDER BY `day`
             """,
-            (min_day, *srv_args, min_day, *names),
+            (min_day, *srv_args, min_day, *names, ALL_SERVERS_SNAPSHOT),
         )
     days = {int(r["day"]) for r in cur.fetchall()}
     if extra_days and not server:
@@ -2917,6 +2938,8 @@ def day_start_ts(yyyymmdd: int) -> int:
 
 
 def _snap_numbers(con, day: int, server: str) -> tuple[int, int]:
+    if server == STAGING_SERVER:
+        return 0, 0
     cur = con.cursor()
     names = server_name_variants(server)
     if len(names) == 1:
@@ -3006,25 +3029,76 @@ def _day_unique(con, day: int, server: str | None) -> int:
     return resolve_unique(rows, distinct, maps, named)
 
 
-def _day_peak(con, day: int, server: str | None) -> int:
-    if server:
-        rows, _distinct, maps, sess_peak = session_activity(con, day, server)
-        snap, _uniq = _snap_numbers(con, day, server)
-        return resolve_peak(rows, sess_peak, maps, snap)
-    total = 0
-    for slot in tracked_server_names():
-        rows, _distinct, maps, sess_peak = session_activity(con, day, slot)
-        snap, _uniq = _snap_numbers(con, day, slot)
-        total += resolve_peak(rows, sess_peak, maps, snap)
-    return total
+def _day_peak(con, day: int, server: str) -> int:
+    rows, _distinct, maps, sess_peak = session_activity(con, day, server)
+    snap, _uniq = _snap_numbers(con, day, server)
+    return resolve_peak(rows, sess_peak, maps, snap)
 
 
 def unique_by_day(con, days: list[int], server: str | None = None) -> list[int]:
     return [_day_unique(con, d, server) for d in days]
 
 
-def peak_by_day(con, days: list[int], server: str | None = None) -> list[int]:
-    return [_day_peak(con, d, server) for d in days]
+def concurrent_peaks(intervals, start: int, end: int) -> dict[int, int]:
+    """Sweep recorded player intervals, clipped to UTC days and [start, end)."""
+    changes = defaultdict(lambda: defaultdict(int))
+    for joined, left in intervals:
+        joined, left = max(joined, start), min(left, end)
+        while joined < left:
+            midnight = (joined // 86400 + 1) * 86400
+            events = changes[joined // 86400]
+            events[joined] += 1
+            events[min(left, midnight)] -= 1
+            joined = midnight
+    peaks = {}
+    for day, events in changes.items():
+        occupied = peak = 0
+        for ts in sorted(events):
+            occupied += events[ts]
+            peak = max(peak, occupied)
+        peaks[day_from_ts(day * 86400)] = peak
+    return peaks
+
+
+def peak_by_day(con, days: list[int], server: str | None = None) -> list[int | None]:
+    if server:
+        return [_day_peak(con, d, server) for d in days]
+    if not days:
+        return []
+    first, last = min(days), max(days)
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT `day`, `peak` FROM `site_daily_snapshot`
+        WHERE `server_name`=%s AND `day` BETWEEN %s AND %s
+        """,
+        (ALL_SERVERS_SNAPSHOT, first, last),
+    )
+    measured = {int(row["day"]): int(row["peak"]) for row in cur.fetchall()}
+    missing = [day for day in days if day not in measured]
+    estimated = {}
+    if missing:
+        start = day_start_ts(min(missing))
+        end = day_start_ts(add_days(max(missing), 1))
+        now = now_ts()
+        srv_sql, srv_args = server_sql(None, "ms.`server_name`")
+        cur.execute(
+            f"""
+            SELECT sp.`joined_at` AS joined,
+                   LEAST(COALESCE(NULLIF(sp.`left_at`, 0), %s),
+                         COALESCE(NULLIF(ms.`ended_at`, 0), %s)) AS left_at
+            FROM `site_session_players` sp
+            JOIN `site_map_sessions` ms ON ms.`id`=sp.`session_id`
+            WHERE sp.`joined_at`>0 AND sp.`joined_at`<%s
+              AND (sp.`left_at`=0 OR sp.`left_at`>%s)
+              AND (ms.`ended_at`=0 OR ms.`ended_at`>%s)
+              {srv_sql}
+            """,
+            (now, now, end, start, start, *srv_args),
+        )
+        intervals = ((int(row["joined"]), int(row["left_at"])) for row in cur.fetchall())
+        estimated = concurrent_peaks(intervals, start, end)
+    return [measured.get(day, estimated.get(day)) for day in days]
 
 
 def players_on_day(con, day: int, server: str | None = None) -> set[str]:
@@ -3064,11 +3138,14 @@ def retention(
     return out
 
 
-def avg_playtime_by_day(con, days: list[int], server: str | None = None) -> list[int]:
+def avg_playtime_by_day(con, days: list[int], server: str | None = None) -> list[int | None]:
     out = []
     cur = con.cursor()
     srv_sql, srv_args = server_sql(server, "ms.`server_name`")
     for d in days:
+        if d < PLAYTIME_START_DAY:
+            out.append(None)
+            continue
         cur.execute(
             f"""
             SELECT sp.`steam_id`, SUM(sp.`duration_sec`) AS total
@@ -3207,6 +3284,9 @@ def build_summary(con, server: str | None = None) -> dict[str, Any]:
             {
                 "name": spec.id,
                 "label": spec.label,
+                "host": spec.host,
+                "port": spec.port,
+                "country": server_country(spec),
                 "remote": bool(spec.ssh),
                 "vps": _vps_label(_group_for_server(spec.id) or {}),
             }
@@ -3284,6 +3364,8 @@ def ingest_payload(con, body: dict[str, Any]) -> str:
 
 def _ingest_payload(con, body: dict[str, Any]) -> str:
     typ = str(body.get("type") or "").lower()
+    if typ != "live" and server_from_payload(body) == STAGING_SERVER:
+        return "ignored_staging"
     if typ in ("daily", "snapshot"):
         ingest_daily(con, body)
         return "daily"
@@ -3516,6 +3598,11 @@ def safe_next_path(raw: str) -> str:
     path = unquote((raw or "").strip())
     if path.rstrip("/") in ("/statistics", "/admin/bans"):
         return path.rstrip("/")
+    match = re.fullmatch(r"/statistics/([a-z0-9_-]{1,64})/?", path)
+    if match and canon_server_name(match[1]):
+        return "/statistics/" + match[1]
+    if re.fullmatch(r"/admin/bans\?ban=[0-9]{1,20}", path):
+        return path
     return ""
 
 
@@ -3671,6 +3758,8 @@ def _fresh_live_players() -> dict[str, dict[str, str]]:
     """SteamID64 -> server the player is on, ignoring stale snapshots."""
     found: dict[str, dict[str, str]] = {}
     for spec in panel_servers():
+        if spec.slot == "staging":
+            continue
         live = get_live_status(spec.id)
         if live.get("stale"):
             continue
@@ -4430,8 +4519,9 @@ def _restart_remote(spec: PanelServer, map_rom: str | None) -> dict[str, Any]:
     if map_rom:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+\.rom", map_rom):
             raise ValueError("invalid map name")
+        home = "/home/kfserver/staging" if slot == "staging" else "/home/kfserver"
         inner = (
-            f"printf '%s\\n' {shlex.quote(map_rom)} > /home/kfserver/run/{slot}.map && {inner}"
+            f"printf '%s\\n' {shlex.quote(map_rom)} > {home}/run/{slot}.map && {inner}"
         )
     cmd = [*_region_ssh(spec), inner]
     try:
@@ -5194,7 +5284,9 @@ def admin_ban_players(con, q: str) -> dict:
     rows = _query(con, """SELECT p.id, p.last_player_name AS name, p.steam_id, p.admin,
         EXISTS(SELECT 1 FROM bans b WHERE b.account_id=p.id AND b.active=1
           AND (b.until_at IS NULL OR b.until_at>UTC_TIMESTAMP())) AS banned
-        FROM players p WHERE """ + where + " ORDER BY p.last_player_name, p.id LIMIT 20", args)
+        FROM players p WHERE """ + where +
+        " ORDER BY (p.steam_id=%s OR CAST(p.id AS CHAR)=%s) DESC, p.last_player_name, p.id LIMIT 20",
+        (*args, q.strip(), q.strip()))
     return {"players": [{"accountId": int(r["id"]), "name": str(r["name"] or ""),
                          "steamId": str(r["steam_id"] or ""), "admin": bool(r["admin"]),
                          "banned": bool(r["banned"])} for r in rows]}
@@ -5337,11 +5429,11 @@ def _player_sessions(con, steam_id: str, limit: int = 50) -> list[dict[str, Any]
                ms.`outcome`, ms.`wave`, ms.`final_wave`, ms.`difficulty`, ms.`server_name`
         FROM `site_session_players` sp
         JOIN `site_map_sessions` ms ON ms.`id` = sp.`session_id`
-        WHERE sp.`steam_id`=%s{public_session_sql("ms.`debug`")}
+        WHERE sp.`steam_id`=%s AND ms.`server_name`<>%s{public_session_sql("ms.`debug`")}
           AND ms.`started_at` >= %s
         ORDER BY ms.`started_at` DESC LIMIT %s
         """,
-        (steam_id, SESSIONS_VISIBLE_SINCE, limit),
+        (steam_id, STAGING_SERVER, SESSIONS_VISIBLE_SINCE, limit),
     )
     maps_dir = _maps_dir()
     out: list[dict[str, Any]] = []
@@ -5549,9 +5641,9 @@ def session_detail(con, session_id: int) -> dict[str, Any] | None:
                `outcome`, `wave`, `final_wave`, `difficulty`, `server_name`,
                `player_count`, `day`, `debug`
         FROM `site_map_sessions`
-        WHERE `id`=%s
+        WHERE `id`=%s AND `server_name`<>%s
         """,
-        (session_id,),
+        (session_id, STAGING_SERVER),
     )
     if not rows:
         return None
